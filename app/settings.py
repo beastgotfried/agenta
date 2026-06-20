@@ -3,12 +3,11 @@ from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    provider: Optional[str] = None
+    provider: str = "groq"
     groq_api_key: Optional[str] = None
     default_model: str = "llama-3.3-70b-versatile"
-    model_id: Optional[str] = None
-    language: Optional[str] = None
-    max_loops: int = 0
+    language: str = "English"
+    max_loops: int = 25
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="UTF-8")
     
