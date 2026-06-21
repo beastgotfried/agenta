@@ -6,8 +6,8 @@ from pathlib import Path
 # path, not the project root (code/). Add the root so the "app" package can be imported.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.agent.graph import build_graph  # noqa: E402  (must come after the sys.path line)
-from app.settings import get_settings  # noqa: E402
+from app.agent.graph import build_graph  
+from app.settings import get_settings 
 
 async def main():
     settings= get_settings()
