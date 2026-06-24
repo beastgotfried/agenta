@@ -6,15 +6,16 @@ from pathlib import Path
 # path, not the project root (code/). Add the root so the "app" package can be imported.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.agent.graph import build_graph  
-from app.settings import get_settings 
+from app.agent.graph import build_graph
+from app.settings import get_settings
+
 
 async def main():
-    settings= get_settings()
-    #take the goal from cli or use pre assigned
+    settings = get_settings()
+    # Take the goal from CLI or use a default.
     goal = " ".join(sys.argv[1:]) or "Write a haiku about AI."
-    
-    initial_state={
+
+    initial_state = {
         "goal": goal,
         "language": settings.language or "English",
         "max_loops": settings.max_loops,
@@ -23,13 +24,12 @@ async def main():
         "completed_tasks": [],
         "results": [],
         "loop_count": 0,
-        "summary": None
+        "summary": None,
     }
-    # build the graph, then run it on the initial state; it returns the final state dict
+    # Build the graph, then run it on the initial state.
     compiled_graph = build_graph()
     final_state = await compiled_graph.ainvoke(initial_state)
 
-    # safely print summary if present
     if final_state and isinstance(final_state, dict):
         summary = final_state.get("summary")
         if summary:

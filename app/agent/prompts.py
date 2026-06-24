@@ -16,8 +16,10 @@ focused search query. Use at most 5 tasks; use a single task for simple goals.
 
 Examples:
 - "Who is the current NBA MVP?" -> ["current NBA MVP candidates"]
-- "Nutritional values of almond vs soy milk?" -> ["nutrition of almond milk", "nutrition of soy milk"]
-- "Add weighted edges to a digraph in {language}?" -> ["add a weighted edge to a digraph in {language}"]
+- "Nutritional values of almond vs soy milk?"
+  -> ["nutrition of almond milk", "nutrition of soy milk"]
+- "Add weighted edges to a digraph in {language}?"
+  -> ["add a weighted edge to a digraph in {language}"]
 """
 
 # --- tool selection (analyze_node, built in 2d) ---------------------------
