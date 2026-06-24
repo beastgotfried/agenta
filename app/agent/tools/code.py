@@ -3,6 +3,7 @@ from app.agent.prompts import CODE
 from app.agent.schemas import ToolName
 from app.agent.tools.base import register
 
+
 class CodeTool:
     name: ToolName = "code"
     description = (
