@@ -1,10 +1,14 @@
+import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import TypedDict
+from typing import Any, TypedDict, cast
 from uuid import uuid4
 
-from fastapi import FastAPI, status
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from sse_starlette.sse import EventSourceResponse
 
+from app.agent.graph import build_graph
 from app.agent.state import AgentState
 from app.agent.tools import available_tools
 from app.api.schemas import (
@@ -59,6 +63,13 @@ def build_initial_state(request: CreateRunRequest) -> AgentState:
     }
 
 
+def sse_event(event: str, data: dict[str, Any]) -> dict[str, str]:
+    return {
+        "event": event,
+        "data": json.dumps(data),
+    }
+
+
 @app.get("/healthz", response_model=HealthResponse)
 async def healthz() -> HealthResponse:
     return HealthResponse(status="ok")
@@ -87,3 +98,36 @@ async def create_run(request: CreateRunRequest) -> CreateRunResponse:
     }
 
     return CreateRunResponse(run_id=run_id, status="created")
+
+
+@app.get("/runs/{run_id}/stream")
+async def stream_run(run_id: str) -> EventSourceResponse:
+    if run_id not in RUNS:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    async def event_generator() -> AsyncIterator[dict[str, str]]:
+        record = RUNS[run_id]
+
+        if record["status"] == "completed":
+            yield sse_event("summary", {"text": record["state"].get("summary") or ""})
+            yield sse_event("done", {})
+            return
+
+        record["status"] = "running"
+        yield sse_event("status", {"status": "running", "run_id": run_id})
+
+        try:
+            graph = build_graph()
+            final_state = cast(AgentState, await graph.ainvoke(record["state"]))
+
+            record["state"] = final_state
+            record["status"] = "completed"
+
+            yield sse_event("summary", {"text": final_state.get("summary") or ""})
+            yield sse_event("done", {})
+        except Exception as error:
+            record["status"] = "failed"
+            yield sse_event("error", {"message": str(error)})
+            yield sse_event("done", {})
+
+    return EventSourceResponse(event_generator())
