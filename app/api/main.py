@@ -232,6 +232,19 @@ def control_event_if_needed(run_id: str, sequence: int) -> tuple[dict[str, str],
     )
 
 
+async def persist_pause_checkpoint(
+    *,
+    graph: Any,
+    config: dict[str, Any],
+    node_name: str | None,
+    update: dict[str, Any] | None,
+) -> None:
+    if node_name is None or update is None:
+        return
+
+    await graph.aupdate_state(config, update, as_node=node_name)
+
+
 @app.get("/healthz", response_model=HealthResponse)
 async def healthz() -> HealthResponse:
     return HealthResponse(status="ok")
@@ -385,7 +398,11 @@ async def stream_run(run_id: str) -> EventSourceResponse:
                         if key != "__metadata__"
                     }
 
+                    last_node_name = None
+                    last_update = None
                     for node_name, update in node_updates.items():
+                        last_node_name = node_name
+                        last_update = update
                         current_state = apply_state_update(current_state, update)
                         RUN_STORE.update_run(run_id, state=current_state)
 
@@ -404,6 +421,12 @@ async def stream_run(run_id: str) -> EventSourceResponse:
 
                     control_event = control_event_if_needed(run_id, sequence)
                     if control_event is not None:
+                        await persist_pause_checkpoint(
+                            graph=graph,
+                            config=config,
+                            node_name=last_node_name,
+                            update=last_update,
+                        )
                         event, sequence = control_event
                         yield event
                         yield sse_event(

@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from langgraph.graph import END, START, StateGraph
 
 from app.agent.state import AgentState
 from app.api import main
@@ -308,6 +309,17 @@ def test_stream_run_stops_when_run_is_paused(
     client, store = api_client
 
     class PausingGraph:
+        async def aupdate_state(
+            self,
+            config: dict[str, Any],
+            update: dict[str, Any],
+            *,
+            as_node: str,
+        ) -> None:
+            assert config["configurable"]["thread_id"]
+            assert as_node == "plan"
+            assert update["tasks"] == ["fake task"]
+
         async def astream(
             self,
             state: AgentState,
@@ -344,6 +356,65 @@ def test_stream_run_stops_when_run_is_paused(
     assert record is not None
     assert record["status"] == "paused"
     assert record["state"]["tasks"] == ["fake task"]
+
+
+def test_paused_stream_persists_checkpoint_before_returning(
+    api_client: tuple[TestClient, SQLiteRunStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store = api_client
+    run_id_holder: dict[str, str] = {}
+    plan_calls: list[str] = []
+
+    async def plan_node(state: AgentState) -> dict[str, Any]:
+        plan_calls.append(state["goal"])
+        store.update_run(run_id_holder["run_id"], status="paused")
+        return {"tasks": ["checkpointed task"], "loop_count": 0}
+
+    def pick_task_node(state: AgentState) -> dict[str, Any]:
+        return {"current_task": state["tasks"][0], "tasks": []}
+
+    async def summarize_node(state: AgentState) -> dict[str, Any]:
+        return {"summary": f"Finished {state['current_task']}"}
+
+    def build_test_graph(*, checkpointer=None):
+        builder = StateGraph(AgentState)
+        builder.add_node("plan", plan_node)
+        builder.add_node("pick_task", pick_task_node)
+        builder.add_node("summarize", summarize_node)
+        builder.add_edge(START, "plan")
+        builder.add_edge("plan", "pick_task")
+        builder.add_edge("pick_task", "summarize")
+        builder.add_edge("summarize", END)
+        return builder.compile(checkpointer=checkpointer)
+
+    monkeypatch.setattr(main, "build_graph", build_test_graph)
+
+    create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
+    run_id = create_response.json()["run_id"]
+    run_id_holder["run_id"] = run_id
+
+    first_response = client.get(f"/runs/{run_id}/stream")
+    first_payloads = sse_payloads(first_response.text)
+
+    resume_response = client.post(f"/runs/{run_id}/resume")
+    second_response = client.get(f"/runs/{run_id}/stream")
+    second_payloads = sse_payloads(second_response.text)
+    record = store.get_run(run_id)
+
+    assert first_response.status_code == 200
+    assert first_payloads[-2]["payload"] == {"status": "paused"}
+    assert resume_response.status_code == 200
+    assert second_response.status_code == 200
+    assert "plan" not in [
+        payload["payload"].get("node")
+        for payload in second_payloads
+        if payload["type"] == "node"
+    ]
+    assert plan_calls == ["Explain LangGraph"]
+    assert record is not None
+    assert record["status"] == "completed"
+    assert record["state"]["summary"] == "Finished checkpointed task"
 
 
 def test_stream_run_skips_cached_checkpoint_updates(
