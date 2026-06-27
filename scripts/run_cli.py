@@ -18,6 +18,7 @@ async def main():
         "goal": goal,
         "language": settings.language or "English",
         "max_loops": settings.max_loops,
+        "expand_tasks": False,
         "user_id": "local",
         "user_context": "",
         "tasks": [],

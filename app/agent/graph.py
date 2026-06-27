@@ -2,6 +2,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agent.nodes import (
     analyze_node,
+    create_tasks_node,
     execute_node,
     pick_task_node,
     plan_node,
@@ -18,6 +19,14 @@ def route_after_pick(state: AgentState) -> str:
     return "analyze"
 
 
+def route_after_execute(state: AgentState) -> str:
+    """Route to optional task expansion or directly to the next task."""
+
+    if state.get("expand_tasks", False) and state["loop_count"] < state["max_loops"]:
+        return "create_tasks"
+    return "pick_task"
+
+
 def build_graph(*, checkpointer=None):
     builder = StateGraph(AgentState)
 
@@ -25,6 +34,7 @@ def build_graph(*, checkpointer=None):
     builder.add_node("pick_task", pick_task_node)
     builder.add_node("analyze", analyze_node)
     builder.add_node("execute", execute_node)
+    builder.add_node("create_tasks", create_tasks_node)
     builder.add_node("summarize", summarize_node)
 
     builder.add_edge(START, "plan")
@@ -35,7 +45,12 @@ def build_graph(*, checkpointer=None):
         {"analyze": "analyze", "summarize": "summarize"},
     )
     builder.add_edge("analyze", "execute")
-    builder.add_edge("execute", "pick_task")
+    builder.add_conditional_edges(
+        "execute",
+        route_after_execute,
+        {"create_tasks": "create_tasks", "pick_task": "pick_task"},
+    )
+    builder.add_edge("create_tasks", "pick_task")
     builder.add_edge("summarize", END)
 
     return builder.compile(checkpointer=checkpointer)

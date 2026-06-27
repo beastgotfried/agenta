@@ -62,6 +62,7 @@ def build_initial_state(request: CreateRunRequest) -> AgentState:
         "goal": request.goal,
         "language": request.language or settings.language or "English",
         "max_loops": request.max_loops or settings.max_loops,
+        "expand_tasks": request.expand_tasks,
         "user_id": "local",
         "user_context": "",
         "tasks": [],
@@ -181,6 +182,18 @@ def progress_events(
                 )
             )
             sequence += 1
+
+    if node_name == "create_tasks" and update.get("tasks"):
+        tasks = cast(list[str], update["tasks"])
+        events.append(
+            sse_event(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="task_created",
+                payload={"task": tasks[-1], "queue_size": len(tasks)},
+            )
+        )
+        sequence += 1
 
     if node_name == "summarize" and update.get("summary"):
         events.append(

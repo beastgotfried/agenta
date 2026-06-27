@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # One place that names every tool. The schema AND the 2b registry import THIS,
 # so the model can never pick a tool the registry doesn't have. (conclude/search/
@@ -23,6 +23,24 @@ class ToolChoice(BaseModel):
     reasoning: str = Field(description="Why this tool fits the task (in the user's language).")
     action: ToolName = Field(description="The single tool to run.")
     arg: str = Field(description="Input to the tool — e.g. the search query, or the task text.")
+
+
+class FollowupTask(BaseModel):
+    """At most one new task discovered after executing a task."""
+
+    task: str | None = Field(
+        default=None,
+        description="One concrete follow-up task, or null when no new task is needed.",
+    )
+
+    @field_validator("task")
+    @classmethod
+    def normalize_task(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        normalized = " ".join(value.split())
+        return normalized or None
 
 
 def default_tool_choice(task: str) -> ToolChoice:

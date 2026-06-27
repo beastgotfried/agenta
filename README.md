@@ -6,11 +6,12 @@ and into one server-side state machine that can later be streamed through an API
 
 Right now, agentmake can run as a headless CLI agent or as a FastAPI service.
 It can take a goal, plan tasks, choose a tool for each task, execute those
-tasks, stream progress events, pause and resume runs, and summarize the results.
+tasks, optionally add follow-up tasks, stream progress events, pause and resume
+runs, and summarize the results.
 
 ## Current Status
 
-Implemented through **M3 checkpointing and run controls**:
+Implemented through **optional task expansion**:
 
 - A LangGraph `StateGraph` owns the agent loop.
 - Goals are converted into structured task lists.
@@ -21,6 +22,8 @@ Implemented through **M3 checkpointing and run controls**:
   - `code`
   - `conclude`
 - The executor runs the selected tool and stores the result.
+- When `expand_tasks` is enabled, the agent can add one deduped follow-up task
+  after each completed task.
 - The summarizer combines all task results into a final answer.
 - The CLI can run the full loop end to end.
 - FastAPI exposes:
@@ -43,7 +46,6 @@ Implemented through **M3 checkpointing and run controls**:
 
 Not implemented yet:
 
-- Task expansion
 - Chat over completed results
 - Durable user memory
 - Frontend
@@ -60,6 +62,7 @@ START
   -> pick_task
   -> analyze
   -> execute
+  -> optional create_tasks
   -> pick_task
   -> ...
   -> summarize
@@ -69,10 +72,11 @@ START
 The important loop is:
 
 ```text
-pick_task -> analyze -> execute -> pick_task
+pick_task -> analyze -> execute -> optional create_tasks -> pick_task
 ```
 
-That means each task gets its own tool decision before execution.
+That means each task gets its own tool decision before execution, and runs that
+opt in to expansion can adapt the queue as results come in.
 
 ## How The Agent Works
 
@@ -82,8 +86,9 @@ That means each task gets its own tool decision before execution.
 4. `pick_task_node` selects the next task.
 5. `analyze_node` chooses the best tool with structured `ToolChoice` output.
 6. `execute_node` runs the selected tool.
-7. The graph loops until no tasks remain or `max_loops` is reached.
-8. `summarize_node` writes the final summary.
+7. `create_tasks_node` optionally adds one new follow-up task when expansion is enabled.
+8. The graph loops until no tasks remain or `max_loops` is reached.
+9. `summarize_node` writes the final summary.
 
 ## Project Structure
 
@@ -92,9 +97,9 @@ app/
   settings.py              # Provider, model, language, loop settings
   agent/
     graph.py               # LangGraph wiring
-    nodes.py               # plan, pick_task, analyze, execute, summarize
+    nodes.py               # plan, pick_task, analyze, execute, create_tasks, summarize
     state.py               # AgentState and Analysis shape
-    schemas.py             # Plan, ToolChoice, ToolName
+    schemas.py             # Plan, ToolChoice, FollowupTask, ToolName
     prompts.py             # Fixed agent prompt templates
     models.py              # LLM factory
     tools/
@@ -171,6 +176,14 @@ curl -X POST http://127.0.0.1:8000/runs \
   -d '{"goal":"Write a short explanation of LangGraph"}'
 ```
 
+Create a run with optional task expansion:
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs \
+  -H "Content-Type: application/json" \
+  -d '{"goal":"Research LangGraph checkpointing","expand_tasks":true}'
+```
+
 Copy the returned `run_id`, then stream that run:
 
 ```bash
@@ -211,6 +224,7 @@ plan
 task
 analysis
 task_done
+task_created
 summary
 error
 done
@@ -339,15 +353,16 @@ M3e  complete: stale running-run recovery on startup
 M3f  complete: LangGraph SQLite checkpointing
 M3g  complete: pause, resume, and cancel run controls
 M3h  complete: Railway deployment config
+M4a  complete: optional task expansion
 ```
 
 ## Next Steps
 
 Recommended next work:
 
-1. Add task expansion.
-2. Add chat over completed run results.
-3. Start the frontend SSE client.
+1. Add chat over completed run results.
+2. Start the frontend SSE client.
+3. Add durable user memory.
 
 M3 target API:
 

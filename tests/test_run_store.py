@@ -9,6 +9,7 @@ def make_state() -> AgentState:
         "goal": "Explain LangGraph",
         "language": "English",
         "max_loops": 3,
+        "expand_tasks": False,
         "user_id": "local",
         "user_context": "",
         "tasks": [],

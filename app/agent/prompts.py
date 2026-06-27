@@ -69,6 +69,30 @@ Be clear and informative. Use ONLY the information given — invent nothing.
 If there is no information, say "There is nothing to summarize".
 """
 
+# --- optional task expansion (create_tasks_node) -------------------------
+CREATE_TASKS = """Answer in the "{language}" language.
+Overall objective: "{goal}"
+{user_context}
+Just completed task:
+"{task}"
+
+Result from that task:
+"{result}"
+
+Unfinished queued tasks:
+{queued_tasks}
+
+Already completed tasks:
+{completed_tasks}
+
+Decide whether the result reveals exactly one useful follow-up task that is
+needed to complete the objective. Return no task if the existing queued tasks are
+already enough, if the follow-up would duplicate existing work, or if the run is
+already ready to summarize.
+
+If you add a task, make it concrete and actionable.
+"""
+
 # --- summarize search hits WITH inline citations (search tool, 2c) --------
 SUMMARIZE_WITH_SOURCES = """Answer in the "{language}" language.
 Answer the query "{query}" using ONLY this information:

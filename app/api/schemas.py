@@ -29,6 +29,7 @@ class CreateRunRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=2000)
     language: str | None = Field(default=None, min_length=1, max_length=100)
     max_loops: int | None = Field(default=None, ge=1, le=25)
+    expand_tasks: bool = False
 
     @field_validator("goal")
     @classmethod

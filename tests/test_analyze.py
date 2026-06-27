@@ -14,6 +14,7 @@ def make_state(*, current_task: str | None = "research LangGraph") -> AgentState
         "goal": "Write a short LangGraph guide.",
         "language": "English",
         "max_loops": 5,
+        "expand_tasks": False,
         "user_id": "local",
         "user_context": "",
         "tasks": [],

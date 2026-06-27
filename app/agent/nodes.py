@@ -1,6 +1,6 @@
 from app.agent.models import make_model
-from app.agent.prompts import ANALYZE_TASK, START_GOAL, SUMMARIZE
-from app.agent.schemas import Plan, ToolChoice, default_tool_choice
+from app.agent.prompts import ANALYZE_TASK, CREATE_TASKS, START_GOAL, SUMMARIZE
+from app.agent.schemas import FollowupTask, Plan, ToolChoice, default_tool_choice
 from app.agent.state import AgentState
 from app.agent.tools import get_tool, tool_descriptions
 
@@ -89,6 +89,60 @@ async def execute_node(state: AgentState) -> dict:
         "completed_tasks": [current_task],
         "loop_count": state["loop_count"] + 1,
     }
+
+
+def normalize_task_key(task: str) -> str:
+    return " ".join(task.casefold().split())
+
+
+def is_duplicate_task(task: str, state: AgentState) -> bool:
+    task_key = normalize_task_key(task)
+    existing_tasks = [
+        *state["tasks"],
+        *state["completed_tasks"],
+    ]
+
+    if state["current_task"]:
+        existing_tasks.append(state["current_task"])
+
+    return task_key in {normalize_task_key(existing) for existing in existing_tasks}
+
+
+async def create_tasks_node(state: AgentState) -> dict:
+    """Optionally add one useful follow-up task after execution."""
+
+    if not state.get("expand_tasks", False):
+        return {}
+    if state["loop_count"] >= state["max_loops"]:
+        return {}
+    if state["current_task"] is None or not state["results"]:
+        return {}
+
+    prompt = CREATE_TASKS.format(
+        goal=state["goal"],
+        task=state["current_task"],
+        result=state["results"][-1],
+        language=state["language"],
+        user_context=str(state.get("user_context", "")),
+        queued_tasks=state["tasks"] or "None",
+        completed_tasks=state["completed_tasks"] or "None",
+    )
+
+    try:
+        model = make_model().with_structured_output(FollowupTask)
+        followup_result = await model.ainvoke(prompt)
+        followup = (
+            followup_result
+            if isinstance(followup_result, FollowupTask)
+            else FollowupTask.model_validate(followup_result)
+        )
+    except Exception:
+        return {}
+
+    if followup.task is None or is_duplicate_task(followup.task, state):
+        return {}
+
+    return {"tasks": [*state["tasks"], followup.task]}
 
 
 async def summarize_node(state: AgentState) -> dict:

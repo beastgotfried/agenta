@@ -48,6 +48,32 @@ class FakeGraph:
         yield {"summarize": {"summary": "Final API summary."}}
 
 
+class FakeExpansionGraph:
+    async def astream(
+        self,
+        state: AgentState,
+        config: dict[str, Any] | None = None,
+        *,
+        stream_mode: str,
+    ) -> AsyncIterator[dict[str, dict[str, Any]]]:
+        assert state is not None
+        assert config is not None
+        assert stream_mode == "updates"
+
+        yield {"plan": {"tasks": ["fake task"], "loop_count": 0, "current_analysis": None}}
+        yield {"pick_task": {"current_task": "fake task", "tasks": [], "current_analysis": None}}
+        yield {
+            "execute": {
+                "completed_tasks": ["fake task"],
+                "results": ["fake result"],
+                "loop_count": 1,
+            }
+        }
+        yield {"create_tasks": {"tasks": ["follow-up task"]}}
+        yield {"pick_task": {"current_task": None, "current_analysis": None}}
+        yield {"summarize": {"summary": "Final API summary."}}
+
+
 @pytest.fixture
 def api_client(
     tmp_path: Path,
@@ -82,6 +108,25 @@ def test_create_run_stores_initial_state(
     assert record is not None
     assert record["state"]["goal"] == "Explain LangGraph"
     assert record["state"]["max_loops"] == 3
+    assert record["state"]["expand_tasks"] is False
+
+
+def test_create_run_can_enable_task_expansion(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    client, store = api_client
+
+    response = client.post(
+        "/runs",
+        json={"goal": "Explain LangGraph", "expand_tasks": True},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    record = store.get_run(body["run_id"])
+
+    assert record is not None
+    assert record["state"]["expand_tasks"] is True
 
 
 def test_get_run_returns_persisted_run_details(
@@ -102,6 +147,7 @@ def test_get_run_returns_persisted_run_details(
     assert body["updated_at"]
     assert body["state"]["goal"] == "Explain LangGraph"
     assert body["state"]["max_loops"] == 3
+    assert body["state"]["expand_tasks"] is False
     assert body["state"]["summary"] is None
 
 
@@ -162,6 +208,44 @@ def test_stream_run_executes_graph_and_emits_progress(
     assert record["state"]["completed_tasks"] == ["fake task"]
     assert record["state"]["results"] == ["fake result"]
     assert record["state"]["summary"] == "Final API summary."
+
+
+def test_stream_run_emits_task_created_progress_event(
+    api_client: tuple[TestClient, SQLiteRunStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store = api_client
+    monkeypatch.setattr(main, "build_graph", lambda *, checkpointer=None: FakeExpansionGraph())
+
+    create_response = client.post(
+        "/runs",
+        json={"goal": "Explain LangGraph", "expand_tasks": True},
+    )
+    run_id = create_response.json()["run_id"]
+
+    response = client.get(f"/runs/{run_id}/stream")
+    payloads = sse_payloads(response.text)
+    record = store.get_run(run_id)
+
+    assert response.status_code == 200
+    assert [payload["type"] for payload in payloads] == [
+        "status",
+        "node",
+        "plan",
+        "node",
+        "task",
+        "node",
+        "task_done",
+        "node",
+        "task_created",
+        "node",
+        "node",
+        "summary",
+        "done",
+    ]
+    assert payloads[8]["payload"] == {"task": "follow-up task", "queue_size": 1}
+    assert record is not None
+    assert record["state"]["tasks"] == ["follow-up task"]
 
 
 def test_get_run_returns_completed_run_details_after_stream(

@@ -15,6 +15,7 @@ class AgentState(TypedDict):
     goal: str
     language: str
     max_loops: int
+    expand_tasks: bool
     user_id: str
     user_context: str
 
@@ -30,4 +31,3 @@ class AgentState(TypedDict):
     # --- control / output ---
     loop_count: int               # how many tasks we've executed
     summary: str | None           # filled in at the very end
-
