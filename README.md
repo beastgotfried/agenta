@@ -1,4 +1,4 @@
-# agentmake
+# agenta
 
 agentmake is a Python rebuild of the AgentGPT-style agent loop using LangGraph
 and LangChain. The goal is to move the autonomous agent brain out of the browser
