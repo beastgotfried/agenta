@@ -10,7 +10,7 @@ tasks, stream progress events, and summarize the results.
 
 ## Current Status
 
-Implemented through **M3 graph progress streaming**:
+Implemented through **M3 SQLite run persistence**:
 
 - A LangGraph `StateGraph` owns the agent loop.
 - Goals are converted into structured task lists.
@@ -29,6 +29,7 @@ Implemented through **M3 graph progress streaming**:
   - `POST /runs`
   - `GET /runs/{run_id}/stream`
 - The stream endpoint emits SSE progress events from graph updates.
+- Run state is stored in SQLite at `data/runs.sqlite`.
 - Focused tests cover tools, graph routing, analyze fallback, and API streaming.
 
 Not implemented yet:
@@ -97,6 +98,8 @@ app/
   api/
     main.py                # FastAPI app, CORS, run creation, SSE stream
     schemas.py             # API request/response schemas
+  persistence/
+    run_store.py           # SQLite storage for run records and agent state
 scripts/
   run_cli.py               # Headless CLI entrypoint
 tests/
@@ -179,15 +182,15 @@ error
 done
 ```
 
-Current persistence is intentionally temporary:
+Run state is stored in SQLite:
 
-```python
-RUNS: dict[str, RunRecord] = {}
+```text
+data/runs.sqlite
 ```
 
-That in-memory dictionary stores created runs while the server process is alive.
-If the server restarts, run state is lost. SQLite/LangGraph checkpointing is a
-later M3 step.
+This stores run status and serialized `AgentState`, so completed runs can be
+loaded again after a server restart. LangGraph checkpointing is still a later
+M3 step; the current SQLite store is basic run persistence, not pause/resume.
 
 ## Quality Checks
 
@@ -243,6 +246,7 @@ M2d  complete: analyze_node and selected-tool execution
 M3a  complete: FastAPI shell with health, tools, and run creation
 M3b  complete: SSE run stream endpoint
 M3c  complete: graph progress events over SSE
+M3d  complete: SQLite run persistence
 ```
 
 ## Next Steps
@@ -250,7 +254,7 @@ M3c  complete: graph progress events over SSE
 Recommended next work:
 
 1. Improve streaming robustness and event shapes.
-2. Add SQLite/LangGraph checkpoint persistence.
+2. Add LangGraph checkpoint persistence.
 3. Add pause/resume endpoints.
 4. Prepare Railway deployment.
 

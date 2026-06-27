@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.agent.state import AgentState
 from app.api import main
+from app.persistence.run_store import SQLiteRunStore
 
 
 class FakeGraph:
@@ -41,29 +43,45 @@ class FakeGraph:
         yield {"summarize": {"summary": "Final API summary."}}
 
 
-def test_create_run_stores_initial_state() -> None:
-    main.RUNS.clear()
-    client = TestClient(main.app)
+@pytest.fixture
+def api_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[TestClient, SQLiteRunStore]:
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    monkeypatch.setattr(main, "RUN_STORE", store)
+    return TestClient(main.app), store
+
+
+def test_create_run_stores_initial_state(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    client, store = api_client
 
     response = client.post("/runs", json={"goal": "Explain LangGraph", "max_loops": 3})
 
     assert response.status_code == 201
     body = response.json()
+    record = store.get_run(body["run_id"])
+
     assert body["status"] == "created"
-    assert body["run_id"] in main.RUNS
-    assert main.RUNS[body["run_id"]]["state"]["goal"] == "Explain LangGraph"
-    assert main.RUNS[body["run_id"]]["state"]["max_loops"] == 3
+    assert record is not None
+    assert record["state"]["goal"] == "Explain LangGraph"
+    assert record["state"]["max_loops"] == 3
 
 
-def test_stream_run_executes_graph_and_emits_progress(monkeypatch: pytest.MonkeyPatch) -> None:
-    main.RUNS.clear()
+def test_stream_run_executes_graph_and_emits_progress(
+    api_client: tuple[TestClient, SQLiteRunStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store = api_client
     monkeypatch.setattr(main, "build_graph", lambda: FakeGraph())
-    client = TestClient(main.app)
 
     create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
     run_id = create_response.json()["run_id"]
 
     response = client.get(f"/runs/{run_id}/stream")
+    record = store.get_run(run_id)
 
     assert response.status_code == 200
     assert 'event: status\r\ndata: {"status": "running"' in response.text
@@ -79,18 +97,19 @@ def test_stream_run_executes_graph_and_emits_progress(monkeypatch: pytest.Monkey
     assert 'event: summary\r\ndata: {"text": "Final API summary."}' in response.text
     assert "event: done" in response.text
 
-    assert main.RUNS[run_id]["status"] == "completed"
-    assert main.RUNS[run_id]["state"]["completed_tasks"] == ["fake task"]
-    assert main.RUNS[run_id]["state"]["results"] == ["fake result"]
-    assert main.RUNS[run_id]["state"]["summary"] == "Final API summary."
+    assert record is not None
+    assert record["status"] == "completed"
+    assert record["state"]["completed_tasks"] == ["fake task"]
+    assert record["state"]["results"] == ["fake result"]
+    assert record["state"]["summary"] == "Final API summary."
 
 
 def test_stream_run_returns_cached_summary_for_completed_run(
+    api_client: tuple[TestClient, SQLiteRunStore],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    main.RUNS.clear()
+    client, _store = api_client
     monkeypatch.setattr(main, "build_graph", lambda: FakeGraph())
-    client = TestClient(main.app)
 
     create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
     run_id = create_response.json()["run_id"]
@@ -105,9 +124,10 @@ def test_stream_run_returns_cached_summary_for_completed_run(
     assert "event: done" in second_response.text
 
 
-def test_stream_run_returns_404_for_unknown_run() -> None:
-    main.RUNS.clear()
-    client = TestClient(main.app)
+def test_stream_run_returns_404_for_unknown_run(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    client, _store = api_client
 
     response = client.get("/runs/missing/stream")
 

@@ -1,7 +1,6 @@
 import json
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
-from typing import Any, TypedDict, cast
+from typing import Any, cast
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status
@@ -15,19 +14,12 @@ from app.api.schemas import (
     CreateRunRequest,
     CreateRunResponse,
     HealthResponse,
-    RunStatus,
     ToolInfo,
 )
+from app.persistence.run_store import SQLiteRunStore
 from app.settings import get_settings
 
-
-class RunRecord(TypedDict):
-    status: RunStatus
-    state: AgentState
-    created_at: str
-
-
-RUNS: dict[str, RunRecord] = {}
+RUN_STORE = SQLiteRunStore()
 APPEND_FIELDS = {"completed_tasks", "results"}
 
 app = FastAPI(title="agentmake API", version="0.1.0")
@@ -151,30 +143,24 @@ async def list_tools() -> list[ToolInfo]:
 @app.post("/runs", response_model=CreateRunResponse, status_code=status.HTTP_201_CREATED)
 async def create_run(request: CreateRunRequest) -> CreateRunResponse:
     run_id = str(uuid4())
-
-    RUNS[run_id] = {
-        "status": "created",
-        "state": build_initial_state(request),
-        "created_at": datetime.now(UTC).isoformat(),
-    }
+    RUN_STORE.create_run(run_id, build_initial_state(request))
 
     return CreateRunResponse(run_id=run_id, status="created")
 
 
 @app.get("/runs/{run_id}/stream")
 async def stream_run(run_id: str) -> EventSourceResponse:
-    if run_id not in RUNS:
+    record = RUN_STORE.get_run(run_id)
+    if record is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
     async def event_generator() -> AsyncIterator[dict[str, str]]:
-        record = RUNS[run_id]
-
         if record["status"] == "completed":
             yield sse_event("summary", {"text": record["state"].get("summary") or ""})
             yield sse_event("done", {})
             return
 
-        record["status"] = "running"
+        RUN_STORE.update_run(run_id, status="running")
         yield sse_event("status", {"status": "running", "run_id": run_id})
 
         try:
@@ -185,22 +171,21 @@ async def stream_run(run_id: str) -> EventSourceResponse:
             async for chunk in graph.astream(current_state, stream_mode="updates"):
                 for node_name, update in chunk.items():
                     current_state = apply_state_update(current_state, update)
-                    record["state"] = current_state
+                    RUN_STORE.update_run(run_id, state=current_state)
 
                     for event in progress_events(node_name, current_state, update):
                         if event["event"] == "summary":
                             summary_sent = True
                         yield event
 
-            record["state"] = current_state
-            record["status"] = "completed"
+            RUN_STORE.update_run(run_id, status="completed", state=current_state)
 
             if not summary_sent:
                 yield sse_event("summary", {"text": current_state.get("summary") or ""})
 
             yield sse_event("done", {})
         except Exception as error:
-            record["status"] = "failed"
+            RUN_STORE.update_run(run_id, status="failed")
             yield sse_event("error", {"message": str(error)})
             yield sse_event("done", {})
 
