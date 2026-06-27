@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,14 @@ def api_client(
     return TestClient(main.app), store
 
 
+def sse_payloads(response_text: str) -> list[dict[str, Any]]:
+    payloads = []
+    for line in response_text.splitlines():
+        if line.startswith("data: "):
+            payloads.append(json.loads(line.removeprefix("data: ")))
+    return payloads
+
+
 def test_create_run_stores_initial_state(
     api_client: tuple[TestClient, SQLiteRunStore],
 ) -> None:
@@ -82,20 +91,45 @@ def test_stream_run_executes_graph_and_emits_progress(
 
     response = client.get(f"/runs/{run_id}/stream")
     record = store.get_run(run_id)
+    payloads = sse_payloads(response.text)
 
     assert response.status_code == 200
-    assert 'event: status\r\ndata: {"status": "running"' in response.text
-    assert 'event: node\r\ndata: {"node": "plan"}' in response.text
-    assert 'event: plan\r\ndata: {"tasks": ["fake task"]}' in response.text
-    assert 'event: task\r\ndata: {"task": "fake task"}' in response.text
-    assert 'event: node\r\ndata: {"node": "analyze"}' in response.text
-    assert 'event: analysis\r\ndata: {"task": "fake task"' in response.text
-    assert (
-        'event: task_done\r\ndata: {"task": "fake task", "result": "fake result"'
-        in response.text
-    )
-    assert 'event: summary\r\ndata: {"text": "Final API summary."}' in response.text
-    assert "event: done" in response.text
+    assert [payload["sequence"] for payload in payloads] == list(range(1, len(payloads) + 1))
+    assert {payload["run_id"] for payload in payloads} == {run_id}
+    assert [payload["type"] for payload in payloads] == [
+        "status",
+        "node",
+        "plan",
+        "node",
+        "task",
+        "node",
+        "analysis",
+        "node",
+        "task_done",
+        "node",
+        "node",
+        "summary",
+        "done",
+    ]
+    assert payloads[0]["payload"] == {"status": "running"}
+    assert payloads[1]["payload"] == {"node": "plan"}
+    assert payloads[2]["payload"] == {"tasks": ["fake task"]}
+    assert payloads[4]["payload"] == {"task": "fake task"}
+    assert payloads[6]["payload"] == {
+        "task": "fake task",
+        "analysis": {
+            "reasoning": "Use fake tool.",
+            "action": "conclude",
+            "arg": "done",
+        },
+    }
+    assert payloads[8]["payload"] == {
+        "task": "fake task",
+        "result": "fake result",
+        "loop_count": 1,
+    }
+    assert payloads[11]["payload"] == {"text": "Final API summary."}
+    assert payloads[-1]["payload"] == {}
 
     assert record is not None
     assert record["status"] == "completed"
@@ -116,12 +150,15 @@ def test_stream_run_returns_cached_summary_for_completed_run(
 
     first_response = client.get(f"/runs/{run_id}/stream")
     second_response = client.get(f"/runs/{run_id}/stream")
+    second_payloads = sse_payloads(second_response.text)
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
-    assert 'event: status\r\ndata: {"status": "running"' not in second_response.text
-    assert 'event: summary\r\ndata: {"text": "Final API summary."}' in second_response.text
-    assert "event: done" in second_response.text
+    assert [payload["type"] for payload in second_payloads] == ["summary", "done"]
+    assert [payload["sequence"] for payload in second_payloads] == [1, 2]
+    assert {payload["run_id"] for payload in second_payloads} == {run_id}
+    assert second_payloads[0]["payload"] == {"text": "Final API summary."}
+    assert second_payloads[1]["payload"] == {}
 
 
 def test_stream_run_returns_404_for_unknown_run(

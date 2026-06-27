@@ -182,6 +182,23 @@ error
 done
 ```
 
+Each SSE message uses a normalized JSON body:
+
+```json
+{
+  "run_id": "uuid",
+  "sequence": 1,
+  "type": "status",
+  "payload": {
+    "status": "running"
+  }
+}
+```
+
+The SSE `event:` name matches the JSON `type`. `sequence` starts at `1` for
+each stream connection and increments by one for every event sent on that
+connection.
+
 Run state is stored in SQLite:
 
 ```text

@@ -56,9 +56,22 @@ def build_initial_state(request: CreateRunRequest) -> AgentState:
     }
 
 
-def sse_event(event: str, data: dict[str, Any]) -> dict[str, str]:
+def sse_event(
+    *,
+    run_id: str,
+    sequence: int,
+    event_type: str,
+    payload: dict[str, Any],
+) -> dict[str, str]:
+    data = {
+        "run_id": run_id,
+        "sequence": sequence,
+        "type": event_type,
+        "payload": payload,
+    }
+
     return {
-        "event": event,
+        "event": event_type,
         "data": json.dumps(data),
     }
 
@@ -78,28 +91,59 @@ def apply_state_update(state: AgentState, update: dict[str, Any]) -> AgentState:
 
 
 def progress_events(
+    *,
+    run_id: str,
+    sequence_start: int,
     node_name: str,
     state: AgentState,
     update: dict[str, Any],
-) -> list[dict[str, str]]:
-    events = [sse_event("node", {"node": node_name})]
+) -> tuple[list[dict[str, str]], int]:
+    sequence = sequence_start
+    events = [
+        sse_event(
+            run_id=run_id,
+            sequence=sequence,
+            event_type="node",
+            payload={"node": node_name},
+        )
+    ]
+    sequence += 1
 
     if node_name == "plan" and "tasks" in update:
-        events.append(sse_event("plan", {"tasks": update["tasks"]}))
+        events.append(
+            sse_event(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="plan",
+                payload={"tasks": update["tasks"]},
+            )
+        )
+        sequence += 1
 
     if node_name == "pick_task" and update.get("current_task"):
-        events.append(sse_event("task", {"task": update["current_task"]}))
+        events.append(
+            sse_event(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="task",
+                payload={"task": update["current_task"]},
+            )
+        )
+        sequence += 1
 
     if node_name == "analyze" and update.get("current_analysis"):
         events.append(
             sse_event(
-                "analysis",
-                {
+                run_id=run_id,
+                sequence=sequence,
+                event_type="analysis",
+                payload={
                     "task": state.get("current_task"),
                     "analysis": update["current_analysis"],
                 },
             )
         )
+        sequence += 1
 
     if node_name == "execute":
         completed_tasks = cast(list[str], update.get("completed_tasks", []))
@@ -108,19 +152,30 @@ def progress_events(
         if completed_tasks and results:
             events.append(
                 sse_event(
-                    "task_done",
-                    {
+                    run_id=run_id,
+                    sequence=sequence,
+                    event_type="task_done",
+                    payload={
                         "task": completed_tasks[-1],
                         "result": results[-1],
                         "loop_count": update.get("loop_count"),
                     },
                 )
             )
+            sequence += 1
 
     if node_name == "summarize" and update.get("summary"):
-        events.append(sse_event("summary", {"text": update["summary"]}))
+        events.append(
+            sse_event(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="summary",
+                payload={"text": update["summary"]},
+            )
+        )
+        sequence += 1
 
-    return events
+    return events, sequence
 
 
 @app.get("/healthz", response_model=HealthResponse)
@@ -155,13 +210,32 @@ async def stream_run(run_id: str) -> EventSourceResponse:
         raise HTTPException(status_code=404, detail="Run not found")
 
     async def event_generator() -> AsyncIterator[dict[str, str]]:
+        sequence = 1
+
         if record["status"] == "completed":
-            yield sse_event("summary", {"text": record["state"].get("summary") or ""})
-            yield sse_event("done", {})
+            yield sse_event(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="summary",
+                payload={"text": record["state"].get("summary") or ""},
+            )
+            sequence += 1
+            yield sse_event(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="done",
+                payload={},
+            )
             return
 
         RUN_STORE.update_run(run_id, status="running")
-        yield sse_event("status", {"status": "running", "run_id": run_id})
+        yield sse_event(
+            run_id=run_id,
+            sequence=sequence,
+            event_type="status",
+            payload={"status": "running"},
+        )
+        sequence += 1
 
         try:
             graph = build_graph()
@@ -173,7 +247,15 @@ async def stream_run(run_id: str) -> EventSourceResponse:
                     current_state = apply_state_update(current_state, update)
                     RUN_STORE.update_run(run_id, state=current_state)
 
-                    for event in progress_events(node_name, current_state, update):
+                    events, sequence = progress_events(
+                        run_id=run_id,
+                        sequence_start=sequence,
+                        node_name=node_name,
+                        state=current_state,
+                        update=update,
+                    )
+
+                    for event in events:
                         if event["event"] == "summary":
                             summary_sent = True
                         yield event
@@ -181,12 +263,34 @@ async def stream_run(run_id: str) -> EventSourceResponse:
             RUN_STORE.update_run(run_id, status="completed", state=current_state)
 
             if not summary_sent:
-                yield sse_event("summary", {"text": current_state.get("summary") or ""})
+                yield sse_event(
+                    run_id=run_id,
+                    sequence=sequence,
+                    event_type="summary",
+                    payload={"text": current_state.get("summary") or ""},
+                )
+                sequence += 1
 
-            yield sse_event("done", {})
+            yield sse_event(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="done",
+                payload={},
+            )
         except Exception as error:
             RUN_STORE.update_run(run_id, status="failed")
-            yield sse_event("error", {"message": str(error)})
-            yield sse_event("done", {})
+            yield sse_event(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="error",
+                payload={"message": str(error)},
+            )
+            sequence += 1
+            yield sse_event(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="done",
+                payload={},
+            )
 
     return EventSourceResponse(event_generator())
