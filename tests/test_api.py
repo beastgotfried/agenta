@@ -182,6 +182,21 @@ def test_get_run_returns_completed_run_details_after_stream(
     assert body["state"]["summary"] == "Final API summary."
 
 
+def test_startup_marks_stale_running_runs_as_failed(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    _client, store = api_client
+
+    store.create_run("stale-run", main.build_initial_state(main.CreateRunRequest(goal="Resume me")))
+    store.update_run("stale-run", status="running")
+
+    with TestClient(main.app) as client:
+        response = client.get("/runs/stale-run")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+
+
 def test_stream_run_returns_cached_summary_for_completed_run(
     api_client: tuple[TestClient, SQLiteRunStore],
     monkeypatch: pytest.MonkeyPatch,

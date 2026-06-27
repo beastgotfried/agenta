@@ -38,3 +38,24 @@ def test_run_store_persists_run_across_instances(tmp_path: Path) -> None:
     assert record["run_id"] == "run-1"
     assert record["status"] == "completed"
     assert record["state"]["summary"] == "Finished."
+
+
+def test_run_store_marks_running_runs_as_failed(tmp_path: Path) -> None:
+    db_path = tmp_path / "runs.sqlite"
+    store = SQLiteRunStore(db_path)
+
+    store.create_run("run-1", make_state())
+    store.update_run("run-1", status="running")
+    store.create_run("run-2", make_state())
+    store.update_run("run-2", status="completed")
+
+    changed_count = store.mark_running_as_failed()
+
+    run_1 = store.get_run("run-1")
+    run_2 = store.get_run("run-2")
+
+    assert changed_count == 1
+    assert run_1 is not None
+    assert run_1["status"] == "failed"
+    assert run_2 is not None
+    assert run_2["status"] == "completed"

@@ -119,3 +119,18 @@ class SQLiteRunStore:
             "created_at": existing["created_at"],
             "updated_at": updated_at,
         }
+
+    def mark_running_as_failed(self) -> int:
+        updated_at = datetime.now(UTC).isoformat()
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE runs
+                SET status = ?, updated_at = ?
+                WHERE status = ?
+                """,
+                ("failed", updated_at, "running"),
+            )
+
+        return cursor.rowcount

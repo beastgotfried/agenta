@@ -1,5 +1,6 @@
 import json
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, cast
 from uuid import uuid4
 
@@ -23,7 +24,14 @@ from app.settings import get_settings
 RUN_STORE = SQLiteRunStore()
 APPEND_FIELDS = {"completed_tasks", "results"}
 
-app = FastAPI(title="agentmake API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    RUN_STORE.mark_running_as_failed()
+    yield
+
+
+app = FastAPI(title="agentmake API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

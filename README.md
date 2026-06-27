@@ -31,6 +31,7 @@ Implemented through **M3 SQLite run persistence**:
   - `GET /runs/{run_id}/stream`
 - The stream endpoint emits SSE progress events from graph updates.
 - Run state is stored in SQLite at `data/runs.sqlite`.
+- On API startup, stale `running` runs are marked `failed`.
 - Focused tests cover tools, graph routing, analyze fallback, and API streaming.
 
 Not implemented yet:
@@ -271,16 +272,16 @@ M3a  complete: FastAPI shell with health, tools, and run creation
 M3b  complete: SSE run stream endpoint
 M3c  complete: graph progress events over SSE
 M3d  complete: SQLite run persistence
+M3e  complete: stale running-run recovery on startup
 ```
 
 ## Next Steps
 
 Recommended next work:
 
-1. Improve streaming robustness and event shapes.
-2. Add LangGraph checkpoint persistence.
-3. Add pause/resume endpoints.
-4. Prepare Railway deployment.
+1. Add LangGraph checkpoint persistence.
+2. Add pause/resume endpoints.
+3. Prepare Railway deployment.
 
 M3 target API:
 
