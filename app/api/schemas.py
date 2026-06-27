@@ -56,3 +56,23 @@ class RunDetailResponse(BaseModel):
     state: AgentState
     created_at: str
     updated_at: str
+
+
+class ChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("question")
+    @classmethod
+    def question_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Question must not be blank")
+        return value
+
+
+class ChatMessageResponse(BaseModel):
+    id: int
+    run_id: str
+    question: str
+    answer: str
+    created_at: str

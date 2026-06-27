@@ -271,6 +271,96 @@ def test_get_run_returns_completed_run_details_after_stream(
     assert body["state"]["summary"] == "Final API summary."
 
 
+def test_chat_with_completed_run_answers_and_persists_message(
+    api_client: tuple[TestClient, SQLiteRunStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store = api_client
+
+    async def fake_answer_run_question(
+        *,
+        goal: str,
+        results: list[str],
+        question: str,
+        language: str,
+    ) -> str:
+        assert goal == "Explain LangGraph"
+        assert results == ["LangGraph supports checkpointing."]
+        assert question == "What does it support?"
+        assert language == "English"
+        return "It supports checkpointing."
+
+    monkeypatch.setattr(main, "answer_run_question", fake_answer_run_question)
+
+    create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
+    run_id = create_response.json()["run_id"]
+    state = main.build_initial_state(main.CreateRunRequest(goal="Explain LangGraph"))
+    state["results"] = ["LangGraph supports checkpointing."]
+    store.update_run(run_id, status="completed", state=state)
+
+    response = client.post(
+        f"/runs/{run_id}/chat",
+        json={"question": "What does it support?"},
+    )
+    messages = store.list_chat_messages(run_id)
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == run_id
+    assert response.json()["question"] == "What does it support?"
+    assert response.json()["answer"] == "It supports checkpointing."
+    assert messages == [response.json()]
+
+
+def test_chat_with_run_rejects_unfinished_run(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    client, _store = api_client
+
+    create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
+    run_id = create_response.json()["run_id"]
+
+    response = client.post(
+        f"/runs/{run_id}/chat",
+        json={"question": "What does it support?"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Cannot chat with a run with status 'created'"
+
+
+def test_chat_with_run_returns_404_for_unknown_run(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    client, _store = api_client
+
+    response = client.post(
+        "/runs/missing/chat",
+        json={"question": "What does it support?"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Run not found"
+
+
+def test_list_run_chat_returns_persisted_history(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    client, store = api_client
+
+    create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
+    run_id = create_response.json()["run_id"]
+    message = store.add_chat_message(
+        run_id,
+        question="What does it support?",
+        answer="Checkpointing.",
+    )
+
+    response = client.get(f"/runs/{run_id}/chat")
+
+    assert response.status_code == 200
+    assert response.json() == [message]
+
+
 def test_startup_marks_stale_running_runs_as_failed(
     api_client: tuple[TestClient, SQLiteRunStore],
 ) -> None:

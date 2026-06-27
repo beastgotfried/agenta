@@ -7,7 +7,8 @@ and into one server-side state machine that can later be streamed through an API
 Right now, agentmake can run as a headless CLI agent or as a FastAPI service.
 It can take a goal, plan tasks, choose a tool for each task, execute those
 tasks, optionally add follow-up tasks, stream progress events, pause and resume
-runs, and summarize the results.
+runs, summarize the results, and answer follow-up questions over completed run
+results.
 
 ## Current Status
 
@@ -25,6 +26,7 @@ Implemented through **optional task expansion**:
 - When `expand_tasks` is enabled, the agent can add one deduped follow-up task
   after each completed task.
 - The summarizer combines all task results into a final answer.
+- Completed runs can be queried through DB-backed chat endpoints.
 - The CLI can run the full loop end to end.
 - FastAPI exposes:
   - `GET /healthz`
@@ -35,8 +37,10 @@ Implemented through **optional task expansion**:
   - `POST /runs/{run_id}/pause`
   - `POST /runs/{run_id}/resume`
   - `POST /runs/{run_id}/cancel`
+  - `GET /runs/{run_id}/chat`
+  - `POST /runs/{run_id}/chat`
 - The stream endpoint emits SSE progress events from graph updates.
-- Run state is stored in SQLite at `data/runs.sqlite`.
+- Run state and chat messages are stored in SQLite at `data/runs.sqlite`.
 - LangGraph checkpoints are stored in SQLite at `data/checkpoints.sqlite`.
 - Streams resume from the latest LangGraph checkpoint when a run is restarted.
 - Pause and cancel requests stop after the current graph node finishes.
@@ -46,7 +50,6 @@ Implemented through **optional task expansion**:
 
 Not implemented yet:
 
-- Chat over completed results
 - Durable user memory
 - Frontend
 
@@ -111,8 +114,10 @@ app/
   api/
     main.py                # FastAPI app, CORS, run creation, SSE stream
     schemas.py             # API request/response schemas
+  chat/
+    chat.py                # Grounded chat over completed run results
   persistence/
-    run_store.py           # SQLite storage for run records and agent state
+    run_store.py           # SQLite storage for runs, agent state, chat messages
     checkpointer.py        # LangGraph SQLite checkpoint helpers
 scripts/
   run_cli.py               # Headless CLI entrypoint
@@ -215,6 +220,20 @@ Cancel a created, running, or paused run:
 curl -X POST http://127.0.0.1:8000/runs/YOUR_RUN_ID/cancel
 ```
 
+Ask a completed run a follow-up question:
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs/YOUR_RUN_ID/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What did this run conclude?"}'
+```
+
+Read stored chat history for a run:
+
+```bash
+curl http://127.0.0.1:8000/runs/YOUR_RUN_ID/chat
+```
+
 The stream currently emits these SSE event types:
 
 ```text
@@ -252,6 +271,8 @@ Run state is stored in SQLite:
 ```text
 data/runs.sqlite
 ```
+
+The same database also stores run chat history in `chat_messages`.
 
 LangGraph checkpoints are stored separately:
 
@@ -354,15 +375,16 @@ M3f  complete: LangGraph SQLite checkpointing
 M3g  complete: pause, resume, and cancel run controls
 M3h  complete: Railway deployment config
 M4a  complete: optional task expansion
+M4b  complete: DB-backed chat over completed run results
 ```
 
 ## Next Steps
 
 Recommended next work:
 
-1. Add chat over completed run results.
-2. Start the frontend SSE client.
-3. Add durable user memory.
+1. Start the frontend SSE client.
+2. Add durable user memory.
+3. Add run history/list endpoints.
 
 M3 target API:
 
@@ -373,6 +395,8 @@ GET  /runs/{run_id}/stream
 POST /runs/{run_id}/pause
 POST /runs/{run_id}/resume
 POST /runs/{run_id}/cancel
+GET  /runs/{run_id}/chat
+POST /runs/{run_id}/chat
 GET  /tools
 GET  /healthz
 ```

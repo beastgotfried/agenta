@@ -104,3 +104,20 @@ links — the source URL as the link, its index as the text, e.g.
 Do not list sources separately at the end. If the query can't be answered from the
 information given, say so and explain why.
 """
+
+# --- chat over completed run results -------------------------------------
+CHAT = """Answer in the "{language}" language.
+You are answering a follow-up question about a completed agent run.
+
+Original goal:
+"{goal}"
+
+Completed run results:
+"{results}"
+
+User question:
+"{question}"
+
+Use ONLY the completed run results as your source of truth. If the answer is not
+present in those results, say "I don't know from this run's results."
+"""

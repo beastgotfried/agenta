@@ -12,6 +12,8 @@ from app.agent.graph import build_graph
 from app.agent.state import AgentState
 from app.agent.tools import available_tools
 from app.api.schemas import (
+    ChatMessageResponse,
+    ChatRequest,
     CreateRunRequest,
     CreateRunResponse,
     HealthResponse,
@@ -19,6 +21,7 @@ from app.api.schemas import (
     RunStatusResponse,
     ToolInfo,
 )
+from app.chat import answer_run_question
 from app.persistence.checkpointer import (
     checkpoint_exists,
     sqlite_checkpointer,
@@ -331,6 +334,40 @@ async def cancel_run(run_id: str) -> RunStatusResponse:
         )
 
     return update_run_status(run_id, "cancelled")
+
+
+@app.get("/runs/{run_id}/chat", response_model=list[ChatMessageResponse])
+async def list_run_chat(run_id: str) -> list[ChatMessageResponse]:
+    get_run_or_404(run_id)
+
+    return [ChatMessageResponse(**message) for message in RUN_STORE.list_chat_messages(run_id)]
+
+
+@app.post("/runs/{run_id}/chat", response_model=ChatMessageResponse)
+async def chat_with_run(run_id: str, request: ChatRequest) -> ChatMessageResponse:
+    record = RUN_STORE.get_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if record["status"] != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot chat with a run with status '{record['status']}'",
+        )
+
+    state = record["state"]
+    answer = await answer_run_question(
+        goal=state["goal"],
+        results=state["results"],
+        question=request.question,
+        language=state["language"],
+    )
+    message = RUN_STORE.add_chat_message(
+        run_id,
+        question=request.question,
+        answer=answer,
+    )
+
+    return ChatMessageResponse(**message)
 
 
 @app.get("/runs/{run_id}/stream")

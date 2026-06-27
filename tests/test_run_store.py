@@ -60,3 +60,29 @@ def test_run_store_marks_running_runs_as_failed(tmp_path: Path) -> None:
     assert run_1["status"] == "failed"
     assert run_2 is not None
     assert run_2["status"] == "completed"
+
+
+def test_run_store_persists_chat_messages_across_instances(tmp_path: Path) -> None:
+    db_path = tmp_path / "runs.sqlite"
+
+    store = SQLiteRunStore(db_path)
+    store.create_run("run-1", make_state())
+    first_message = store.add_chat_message(
+        "run-1",
+        question="What did the run learn?",
+        answer="It learned about LangGraph.",
+    )
+
+    reloaded_store = SQLiteRunStore(db_path)
+    messages = reloaded_store.list_chat_messages("run-1")
+
+    assert first_message["id"] == 1
+    assert messages == [
+        {
+            "id": 1,
+            "run_id": "run-1",
+            "question": "What did the run learn?",
+            "answer": "It learned about LangGraph.",
+            "created_at": first_message["created_at"],
+        }
+    ]

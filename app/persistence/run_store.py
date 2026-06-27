@@ -20,6 +20,14 @@ class StoredRun(TypedDict):
     updated_at: str
 
 
+class StoredChatMessage(TypedDict):
+    id: int
+    run_id: str
+    question: str
+    answer: str
+    created_at: str
+
+
 class SQLiteRunStore:
     def __init__(self, db_path: Path = DEFAULT_DB_PATH) -> None:
         self.db_path = db_path
@@ -42,6 +50,24 @@ class SQLiteRunStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    answer TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_run_id
+                ON chat_messages(run_id)
                 """
             )
 
@@ -134,3 +160,56 @@ class SQLiteRunStore:
             )
 
         return cursor.rowcount
+
+    def add_chat_message(
+        self,
+        run_id: str,
+        *,
+        question: str,
+        answer: str,
+    ) -> StoredChatMessage:
+        created_at = datetime.now(UTC).isoformat()
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO chat_messages (run_id, question, answer, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (run_id, question, answer, created_at),
+            )
+
+        message_id = cursor.lastrowid
+        if message_id is None:
+            raise RuntimeError("Failed to create chat message")
+
+        return {
+            "id": message_id,
+            "run_id": run_id,
+            "question": question,
+            "answer": answer,
+            "created_at": created_at,
+        }
+
+    def list_chat_messages(self, run_id: str) -> list[StoredChatMessage]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, run_id, question, answer, created_at
+                FROM chat_messages
+                WHERE run_id = ?
+                ORDER BY id ASC
+                """,
+                (run_id,),
+            ).fetchall()
+
+        return [
+            {
+                "id": int(row["id"]),
+                "run_id": str(row["run_id"]),
+                "question": str(row["question"]),
+                "answer": str(row["answer"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
