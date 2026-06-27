@@ -18,7 +18,7 @@ def route_after_pick(state: AgentState) -> str:
     return "analyze"
 
 
-def build_graph():
+def build_graph(*, checkpointer=None):
     builder = StateGraph(AgentState)
 
     builder.add_node("plan", plan_node)
@@ -38,4 +38,4 @@ def build_graph():
     builder.add_edge("execute", "pick_task")
     builder.add_edge("summarize", END)
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

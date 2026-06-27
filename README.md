@@ -6,11 +6,11 @@ and into one server-side state machine that can later be streamed through an API
 
 Right now, agentmake can run as a headless CLI agent or as a FastAPI service.
 It can take a goal, plan tasks, choose a tool for each task, execute those
-tasks, stream progress events, and summarize the results.
+tasks, stream progress events, pause and resume runs, and summarize the results.
 
 ## Current Status
 
-Implemented through **M3 SQLite run persistence**:
+Implemented through **M3 checkpointing and run controls**:
 
 - A LangGraph `StateGraph` owns the agent loop.
 - Goals are converted into structured task lists.
@@ -29,14 +29,20 @@ Implemented through **M3 SQLite run persistence**:
   - `POST /runs`
   - `GET /runs/{run_id}`
   - `GET /runs/{run_id}/stream`
+  - `POST /runs/{run_id}/pause`
+  - `POST /runs/{run_id}/resume`
+  - `POST /runs/{run_id}/cancel`
 - The stream endpoint emits SSE progress events from graph updates.
 - Run state is stored in SQLite at `data/runs.sqlite`.
+- LangGraph checkpoints are stored in SQLite at `data/checkpoints.sqlite`.
+- Streams resume from the latest LangGraph checkpoint when a run is restarted.
+- Pause and cancel requests stop after the current graph node finishes.
 - On API startup, stale `running` runs are marked `failed`.
+- Railway config-as-code is available in `railway.toml`.
 - Focused tests cover tools, graph routing, analyze fallback, and API streaming.
 
 Not implemented yet:
 
-- Checkpoint persistence and pause/resume
 - Task expansion
 - Chat over completed results
 - Durable user memory
@@ -102,6 +108,7 @@ app/
     schemas.py             # API request/response schemas
   persistence/
     run_store.py           # SQLite storage for run records and agent state
+    checkpointer.py        # LangGraph SQLite checkpoint helpers
 scripts/
   run_cli.py               # Headless CLI entrypoint
 tests/
@@ -176,6 +183,25 @@ Read a stored run:
 curl http://127.0.0.1:8000/runs/YOUR_RUN_ID
 ```
 
+Pause a running stream:
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs/YOUR_RUN_ID/pause
+```
+
+Resume a paused run, then reconnect the stream:
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs/YOUR_RUN_ID/resume
+curl -N http://127.0.0.1:8000/runs/YOUR_RUN_ID/stream
+```
+
+Cancel a created, running, or paused run:
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs/YOUR_RUN_ID/cancel
+```
+
 The stream currently emits these SSE event types:
 
 ```text
@@ -213,9 +239,46 @@ Run state is stored in SQLite:
 data/runs.sqlite
 ```
 
-This stores run status and serialized `AgentState`, so completed runs can be
-loaded again after a server restart. LangGraph checkpointing is still a later
-M3 step; the current SQLite store is basic run persistence, not pause/resume.
+LangGraph checkpoints are stored separately:
+
+```text
+data/checkpoints.sqlite
+```
+
+The run store keeps API-facing status and serialized `AgentState`; the
+checkpoint database lets LangGraph continue a paused run from its latest
+checkpoint. On resume, the API skips cached checkpoint updates so already-saved
+task results are not duplicated in the stored run state.
+
+## Deploy On Railway
+
+`railway.toml` starts the API with:
+
+```bash
+uv run uvicorn app.api.main:app --host 0.0.0.0 --port $PORT
+```
+
+Minimum Railway variables:
+
+```text
+GROQ_API_KEY=your_key_here
+RUN_DB_PATH=data/runs.sqlite
+CHECKPOINT_DB_PATH=data/checkpoints.sqlite
+```
+
+For persistence across redeploys, attach a Railway volume and point both DB
+paths at the mounted volume, for example:
+
+```text
+RUN_DB_PATH=/data/runs.sqlite
+CHECKPOINT_DB_PATH=/data/checkpoints.sqlite
+```
+
+Health check path:
+
+```text
+/healthz
+```
 
 ## Quality Checks
 
@@ -273,15 +336,18 @@ M3b  complete: SSE run stream endpoint
 M3c  complete: graph progress events over SSE
 M3d  complete: SQLite run persistence
 M3e  complete: stale running-run recovery on startup
+M3f  complete: LangGraph SQLite checkpointing
+M3g  complete: pause, resume, and cancel run controls
+M3h  complete: Railway deployment config
 ```
 
 ## Next Steps
 
 Recommended next work:
 
-1. Add LangGraph checkpoint persistence.
-2. Add pause/resume endpoints.
-3. Prepare Railway deployment.
+1. Add task expansion.
+2. Add chat over completed run results.
+3. Start the frontend SSE client.
 
 M3 target API:
 
@@ -289,6 +355,9 @@ M3 target API:
 POST /runs
 GET  /runs/{run_id}
 GET  /runs/{run_id}/stream
+POST /runs/{run_id}/pause
+POST /runs/{run_id}/resume
+POST /runs/{run_id}/cancel
 GET  /tools
 GET  /healthz
 ```

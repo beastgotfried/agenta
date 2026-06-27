@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -9,6 +10,8 @@ class Settings(BaseSettings):
     default_model: str = "llama-3.3-70b-versatile"
     language: str = "English"
     max_loops: int = 25
+    run_db_path: Path = Path("data/runs.sqlite")
+    checkpoint_db_path: Path = Path("data/checkpoints.sqlite")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="UTF-8")
 

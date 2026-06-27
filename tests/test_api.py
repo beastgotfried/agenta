@@ -17,9 +17,12 @@ class FakeGraph:
     async def astream(
         self,
         state: AgentState,
+        config: dict[str, Any] | None = None,
         *,
         stream_mode: str,
     ) -> AsyncIterator[dict[str, dict[str, Any]]]:
+        assert state is not None
+        assert config is not None
         assert stream_mode == "updates"
 
         yield {"plan": {"tasks": ["fake task"], "loop_count": 0, "current_analysis": None}}
@@ -51,6 +54,7 @@ def api_client(
 ) -> tuple[TestClient, SQLiteRunStore]:
     store = SQLiteRunStore(tmp_path / "runs.sqlite")
     monkeypatch.setattr(main, "RUN_STORE", store)
+    monkeypatch.setattr(main, "CHECKPOINT_DB_PATH", tmp_path / "checkpoints.sqlite")
     return TestClient(main.app), store
 
 
@@ -105,7 +109,7 @@ def test_stream_run_executes_graph_and_emits_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, store = api_client
-    monkeypatch.setattr(main, "build_graph", lambda: FakeGraph())
+    monkeypatch.setattr(main, "build_graph", lambda *, checkpointer=None: FakeGraph())
 
     create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
     run_id = create_response.json()["run_id"]
@@ -164,7 +168,7 @@ def test_get_run_returns_completed_run_details_after_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _store = api_client
-    monkeypatch.setattr(main, "build_graph", lambda: FakeGraph())
+    monkeypatch.setattr(main, "build_graph", lambda *, checkpointer=None: FakeGraph())
 
     create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
     run_id = create_response.json()["run_id"]
@@ -202,7 +206,7 @@ def test_stream_run_returns_cached_summary_for_completed_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _store = api_client
-    monkeypatch.setattr(main, "build_graph", lambda: FakeGraph())
+    monkeypatch.setattr(main, "build_graph", lambda *, checkpointer=None: FakeGraph())
 
     create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
     run_id = create_response.json()["run_id"]
@@ -240,3 +244,155 @@ def test_get_run_returns_404_for_unknown_run(
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Run not found"
+
+
+def test_pause_and_resume_update_run_status(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    client, store = api_client
+
+    create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
+    run_id = create_response.json()["run_id"]
+    store.update_run(run_id, status="running")
+
+    pause_response = client.post(f"/runs/{run_id}/pause")
+    paused_record = store.get_run(run_id)
+    resume_response = client.post(f"/runs/{run_id}/resume")
+    resumed_record = store.get_run(run_id)
+
+    assert pause_response.status_code == 200
+    assert pause_response.json() == {"run_id": run_id, "status": "paused"}
+    assert paused_record is not None
+    assert paused_record["status"] == "paused"
+    assert resume_response.status_code == 200
+    assert resume_response.json() == {"run_id": run_id, "status": "running"}
+    assert resumed_record is not None
+    assert resumed_record["status"] == "running"
+
+
+def test_pause_rejects_non_running_run(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    client, _store = api_client
+
+    create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
+    run_id = create_response.json()["run_id"]
+
+    response = client.post(f"/runs/{run_id}/pause")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Cannot pause a run with status 'created'"
+
+
+def test_cancel_updates_run_status(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    client, store = api_client
+
+    create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
+    run_id = create_response.json()["run_id"]
+
+    response = client.post(f"/runs/{run_id}/cancel")
+    record = store.get_run(run_id)
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": run_id, "status": "cancelled"}
+    assert record is not None
+    assert record["status"] == "cancelled"
+
+
+def test_stream_run_stops_when_run_is_paused(
+    api_client: tuple[TestClient, SQLiteRunStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store = api_client
+
+    class PausingGraph:
+        async def astream(
+            self,
+            state: AgentState,
+            config: dict[str, Any] | None = None,
+            *,
+            stream_mode: str,
+        ) -> AsyncIterator[dict[str, dict[str, Any]]]:
+            assert state is not None
+            assert config is not None
+            assert stream_mode == "updates"
+
+            store.update_run(config["configurable"]["thread_id"], status="paused")
+            yield {"plan": {"tasks": ["fake task"], "loop_count": 0, "current_analysis": None}}
+            yield {"pick_task": {"current_task": "fake task", "tasks": []}}
+
+    monkeypatch.setattr(main, "build_graph", lambda *, checkpointer=None: PausingGraph())
+
+    create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
+    run_id = create_response.json()["run_id"]
+
+    response = client.get(f"/runs/{run_id}/stream")
+    payloads = sse_payloads(response.text)
+    record = store.get_run(run_id)
+
+    assert response.status_code == 200
+    assert [payload["type"] for payload in payloads] == [
+        "status",
+        "node",
+        "plan",
+        "status",
+        "done",
+    ]
+    assert payloads[-2]["payload"] == {"status": "paused"}
+    assert record is not None
+    assert record["status"] == "paused"
+    assert record["state"]["tasks"] == ["fake task"]
+
+
+def test_stream_run_skips_cached_checkpoint_updates(
+    api_client: tuple[TestClient, SQLiteRunStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store = api_client
+
+    class CachedResumeGraph:
+        async def astream(
+            self,
+            state: AgentState | None,
+            config: dict[str, Any] | None = None,
+            *,
+            stream_mode: str,
+        ) -> AsyncIterator[dict[str, Any]]:
+            assert state is None
+            assert config is not None
+            assert stream_mode == "updates"
+
+            yield {
+                "execute": {
+                    "completed_tasks": ["old task"],
+                    "results": ["old result"],
+                    "loop_count": 1,
+                },
+                "__metadata__": {"cached": True},
+            }
+            yield {"summarize": {"summary": "Resumed summary."}}
+
+    async def fake_checkpoint_exists(checkpointer: Any, run_id: str) -> bool:
+        return True
+
+    monkeypatch.setattr(main, "build_graph", lambda *, checkpointer=None: CachedResumeGraph())
+    monkeypatch.setattr(main, "checkpoint_exists", fake_checkpoint_exists)
+
+    create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
+    run_id = create_response.json()["run_id"]
+    state = main.build_initial_state(main.CreateRunRequest(goal="Explain LangGraph"))
+    state["completed_tasks"] = ["old task"]
+    state["results"] = ["old result"]
+    store.update_run(run_id, status="running", state=state)
+
+    response = client.get(f"/runs/{run_id}/stream")
+    record = store.get_run(run_id)
+
+    assert response.status_code == 200
+    assert record is not None
+    assert record["status"] == "completed"
+    assert record["state"]["completed_tasks"] == ["old task"]
+    assert record["state"]["results"] == ["old result"]
+    assert record["state"]["summary"] == "Resumed summary."

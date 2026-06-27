@@ -16,13 +16,22 @@ from app.api.schemas import (
     CreateRunResponse,
     HealthResponse,
     RunDetailResponse,
+    RunStatusResponse,
     ToolInfo,
+)
+from app.persistence.checkpointer import (
+    checkpoint_exists,
+    sqlite_checkpointer,
+    thread_config,
 )
 from app.persistence.run_store import SQLiteRunStore
 from app.settings import get_settings
 
-RUN_STORE = SQLiteRunStore()
+settings = get_settings()
+RUN_STORE = SQLiteRunStore(settings.run_db_path)
+CHECKPOINT_DB_PATH = settings.checkpoint_db_path
 APPEND_FIELDS = {"completed_tasks", "results"}
+TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
 
 @asynccontextmanager
@@ -187,6 +196,42 @@ def progress_events(
     return events, sequence
 
 
+def get_run_or_404(run_id: str) -> RunDetailResponse:
+    record = RUN_STORE.get_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    return RunDetailResponse(**record)
+
+
+def status_response(run_id: str, status_value: str) -> RunStatusResponse:
+    return RunStatusResponse(run_id=run_id, status=cast(Any, status_value))
+
+
+def update_run_status(run_id: str, status_value: str) -> RunStatusResponse:
+    record = RUN_STORE.update_run(run_id, status=cast(Any, status_value))
+    if record is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    return RunStatusResponse(run_id=run_id, status=record["status"])
+
+
+def control_event_if_needed(run_id: str, sequence: int) -> tuple[dict[str, str], int] | None:
+    record = RUN_STORE.get_run(run_id)
+    if record is None or record["status"] not in {"paused", "cancelled"}:
+        return None
+
+    return (
+        sse_event(
+            run_id=run_id,
+            sequence=sequence,
+            event_type="status",
+            payload={"status": record["status"]},
+        ),
+        sequence + 1,
+    )
+
+
 @app.get("/healthz", response_model=HealthResponse)
 async def healthz() -> HealthResponse:
     return HealthResponse(status="ok")
@@ -214,11 +259,52 @@ async def create_run(request: CreateRunRequest) -> CreateRunResponse:
 
 @app.get("/runs/{run_id}", response_model=RunDetailResponse)
 async def get_run(run_id: str) -> RunDetailResponse:
-    record = RUN_STORE.get_run(run_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Run not found")
+    return get_run_or_404(run_id)
 
-    return RunDetailResponse(**record)
+
+@app.post("/runs/{run_id}/pause", response_model=RunStatusResponse)
+async def pause_run(run_id: str) -> RunStatusResponse:
+    record = get_run_or_404(run_id)
+
+    if record.status == "paused":
+        return status_response(run_id, "paused")
+    if record.status != "running":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot pause a run with status '{record.status}'",
+        )
+
+    return update_run_status(run_id, "paused")
+
+
+@app.post("/runs/{run_id}/resume", response_model=RunStatusResponse)
+async def resume_run(run_id: str) -> RunStatusResponse:
+    record = get_run_or_404(run_id)
+
+    if record.status == "running":
+        return status_response(run_id, "running")
+    if record.status != "paused":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot resume a run with status '{record.status}'",
+        )
+
+    return update_run_status(run_id, "running")
+
+
+@app.post("/runs/{run_id}/cancel", response_model=RunStatusResponse)
+async def cancel_run(run_id: str) -> RunStatusResponse:
+    record = get_run_or_404(run_id)
+
+    if record.status == "cancelled":
+        return status_response(run_id, "cancelled")
+    if record.status in {"completed", "failed"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot cancel a run with status '{record.status}'",
+        )
+
+    return update_run_status(run_id, "cancelled")
 
 
 @app.get("/runs/{run_id}/stream")
@@ -246,6 +332,22 @@ async def stream_run(run_id: str) -> EventSourceResponse:
             )
             return
 
+        if record["status"] in {"paused", "failed", "cancelled"}:
+            yield sse_event(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="status",
+                payload={"status": record["status"]},
+            )
+            sequence += 1
+            yield sse_event(
+                run_id=run_id,
+                sequence=sequence,
+                event_type="done",
+                payload={},
+            )
+            return
+
         RUN_STORE.update_run(run_id, status="running")
         yield sse_event(
             run_id=run_id,
@@ -256,27 +358,78 @@ async def stream_run(run_id: str) -> EventSourceResponse:
         sequence += 1
 
         try:
-            graph = build_graph()
             current_state = record["state"]
             summary_sent = False
 
-            async for chunk in graph.astream(current_state, stream_mode="updates"):
-                for node_name, update in chunk.items():
-                    current_state = apply_state_update(current_state, update)
-                    RUN_STORE.update_run(run_id, state=current_state)
+            async with sqlite_checkpointer(CHECKPOINT_DB_PATH) as checkpointer:
+                graph = build_graph(checkpointer=checkpointer)
+                graph_input = (
+                    None
+                    if await checkpoint_exists(checkpointer, run_id)
+                    else current_state
+                )
+                config = thread_config(run_id)
 
-                    events, sequence = progress_events(
-                        run_id=run_id,
-                        sequence_start=sequence,
-                        node_name=node_name,
-                        state=current_state,
-                        update=update,
-                    )
+                async for chunk in graph.astream(
+                    graph_input,
+                    config,
+                    stream_mode="updates",
+                ):
+                    metadata = chunk.get("__metadata__", {})
+                    if isinstance(metadata, dict) and metadata.get("cached"):
+                        continue
 
-                    for event in events:
-                        if event["event"] == "summary":
-                            summary_sent = True
+                    node_updates = {
+                        key: value
+                        for key, value in chunk.items()
+                        if key != "__metadata__"
+                    }
+
+                    for node_name, update in node_updates.items():
+                        current_state = apply_state_update(current_state, update)
+                        RUN_STORE.update_run(run_id, state=current_state)
+
+                        events, sequence = progress_events(
+                            run_id=run_id,
+                            sequence_start=sequence,
+                            node_name=node_name,
+                            state=current_state,
+                            update=update,
+                        )
+
+                        for event in events:
+                            if event["event"] == "summary":
+                                summary_sent = True
+                            yield event
+
+                    control_event = control_event_if_needed(run_id, sequence)
+                    if control_event is not None:
+                        event, sequence = control_event
                         yield event
+                        yield sse_event(
+                            run_id=run_id,
+                            sequence=sequence,
+                            event_type="done",
+                            payload={},
+                        )
+                        return
+
+            current_record = RUN_STORE.get_run(run_id)
+            if current_record is not None and current_record["status"] in TERMINAL_STATUSES:
+                yield sse_event(
+                    run_id=run_id,
+                    sequence=sequence,
+                    event_type="status",
+                    payload={"status": current_record["status"]},
+                )
+                sequence += 1
+                yield sse_event(
+                    run_id=run_id,
+                    sequence=sequence,
+                    event_type="done",
+                    payload={},
+                )
+                return
 
             RUN_STORE.update_run(run_id, status="completed", state=current_state)
 

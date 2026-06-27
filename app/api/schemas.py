@@ -5,7 +5,14 @@ from pydantic import BaseModel, Field, field_validator
 from app.agent.schemas import ToolName
 from app.agent.state import AgentState
 
-RunStatus: TypeAlias = Literal["created", "running", "completed", "failed"]
+RunStatus: TypeAlias = Literal[
+    "created",
+    "running",
+    "paused",
+    "completed",
+    "failed",
+    "cancelled",
+]
 
 
 class HealthResponse(BaseModel):
@@ -33,6 +40,11 @@ class CreateRunRequest(BaseModel):
 
 
 class CreateRunResponse(BaseModel):
+    run_id: str
+    status: RunStatus
+
+
+class RunStatusResponse(BaseModel):
     run_id: str
     status: RunStatus
 
