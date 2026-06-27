@@ -14,6 +14,7 @@ from app.api.schemas import (
     CreateRunRequest,
     CreateRunResponse,
     HealthResponse,
+    RunDetailResponse,
     ToolInfo,
 )
 from app.persistence.run_store import SQLiteRunStore
@@ -201,6 +202,15 @@ async def create_run(request: CreateRunRequest) -> CreateRunResponse:
     RUN_STORE.create_run(run_id, build_initial_state(request))
 
     return CreateRunResponse(run_id=run_id, status="created")
+
+
+@app.get("/runs/{run_id}", response_model=RunDetailResponse)
+async def get_run(run_id: str) -> RunDetailResponse:
+    record = RUN_STORE.get_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    return RunDetailResponse(**record)
 
 
 @app.get("/runs/{run_id}/stream")

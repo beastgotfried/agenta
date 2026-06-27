@@ -27,6 +27,7 @@ Implemented through **M3 SQLite run persistence**:
   - `GET /healthz`
   - `GET /tools`
   - `POST /runs`
+  - `GET /runs/{run_id}`
   - `GET /runs/{run_id}/stream`
 - The stream endpoint emits SSE progress events from graph updates.
 - Run state is stored in SQLite at `data/runs.sqlite`.
@@ -168,6 +169,12 @@ Copy the returned `run_id`, then stream that run:
 curl -N http://127.0.0.1:8000/runs/YOUR_RUN_ID/stream
 ```
 
+Read a stored run:
+
+```bash
+curl http://127.0.0.1:8000/runs/YOUR_RUN_ID
+```
+
 The stream currently emits these SSE event types:
 
 ```text
@@ -279,6 +286,7 @@ M3 target API:
 
 ```text
 POST /runs
+GET  /runs/{run_id}
 GET  /runs/{run_id}/stream
 GET  /tools
 GET  /healthz

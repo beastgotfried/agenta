@@ -79,6 +79,27 @@ def test_create_run_stores_initial_state(
     assert record["state"]["max_loops"] == 3
 
 
+def test_get_run_returns_persisted_run_details(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    client, _store = api_client
+
+    create_response = client.post("/runs", json={"goal": "Explain LangGraph", "max_loops": 3})
+    run_id = create_response.json()["run_id"]
+
+    response = client.get(f"/runs/{run_id}")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["run_id"] == run_id
+    assert body["status"] == "created"
+    assert body["created_at"]
+    assert body["updated_at"]
+    assert body["state"]["goal"] == "Explain LangGraph"
+    assert body["state"]["max_loops"] == 3
+    assert body["state"]["summary"] is None
+
+
 def test_stream_run_executes_graph_and_emits_progress(
     api_client: tuple[TestClient, SQLiteRunStore],
     monkeypatch: pytest.MonkeyPatch,
@@ -138,6 +159,29 @@ def test_stream_run_executes_graph_and_emits_progress(
     assert record["state"]["summary"] == "Final API summary."
 
 
+def test_get_run_returns_completed_run_details_after_stream(
+    api_client: tuple[TestClient, SQLiteRunStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _store = api_client
+    monkeypatch.setattr(main, "build_graph", lambda: FakeGraph())
+
+    create_response = client.post("/runs", json={"goal": "Explain LangGraph"})
+    run_id = create_response.json()["run_id"]
+
+    stream_response = client.get(f"/runs/{run_id}/stream")
+    detail_response = client.get(f"/runs/{run_id}")
+    body = detail_response.json()
+
+    assert stream_response.status_code == 200
+    assert detail_response.status_code == 200
+    assert body["run_id"] == run_id
+    assert body["status"] == "completed"
+    assert body["state"]["completed_tasks"] == ["fake task"]
+    assert body["state"]["results"] == ["fake result"]
+    assert body["state"]["summary"] == "Final API summary."
+
+
 def test_stream_run_returns_cached_summary_for_completed_run(
     api_client: tuple[TestClient, SQLiteRunStore],
     monkeypatch: pytest.MonkeyPatch,
@@ -167,6 +211,17 @@ def test_stream_run_returns_404_for_unknown_run(
     client, _store = api_client
 
     response = client.get("/runs/missing/stream")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Run not found"
+
+
+def test_get_run_returns_404_for_unknown_run(
+    api_client: tuple[TestClient, SQLiteRunStore],
+) -> None:
+    client, _store = api_client
+
+    response = client.get("/runs/missing")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Run not found"

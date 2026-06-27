@@ -3,6 +3,7 @@ from typing import Literal, TypeAlias
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent.schemas import ToolName
+from app.agent.state import AgentState
 
 RunStatus: TypeAlias = Literal["created", "running", "completed", "failed"]
 
@@ -34,3 +35,11 @@ class CreateRunRequest(BaseModel):
 class CreateRunResponse(BaseModel):
     run_id: str
     status: RunStatus
+
+
+class RunDetailResponse(BaseModel):
+    run_id: str
+    status: RunStatus
+    state: AgentState
+    created_at: str
+    updated_at: str
