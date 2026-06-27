@@ -28,6 +28,7 @@ class RunRecord(TypedDict):
 
 
 RUNS: dict[str, RunRecord] = {}
+APPEND_FIELDS = {"completed_tasks", "results"}
 
 app = FastAPI(title="agentmake API", version="0.1.0")
 
@@ -55,8 +56,8 @@ def build_initial_state(request: CreateRunRequest) -> AgentState:
         "user_context": "",
         "tasks": [],
         "current_task": None,
-        "completed_tasks": [],
         "current_analysis": None,
+        "completed_tasks": [],
         "results": [],
         "loop_count": 0,
         "summary": None,
@@ -68,6 +69,66 @@ def sse_event(event: str, data: dict[str, Any]) -> dict[str, str]:
         "event": event,
         "data": json.dumps(data),
     }
+
+
+def apply_state_update(state: AgentState, update: dict[str, Any]) -> AgentState:
+    next_state = dict(state)
+
+    for key, value in update.items():
+        if key in APPEND_FIELDS:
+            previous = cast(list[str], next_state.get(key, []))
+            incoming = cast(list[str], value)
+            next_state[key] = [*previous, *incoming]
+        else:
+            next_state[key] = value
+
+    return cast(AgentState, next_state)
+
+
+def progress_events(
+    node_name: str,
+    state: AgentState,
+    update: dict[str, Any],
+) -> list[dict[str, str]]:
+    events = [sse_event("node", {"node": node_name})]
+
+    if node_name == "plan" and "tasks" in update:
+        events.append(sse_event("plan", {"tasks": update["tasks"]}))
+
+    if node_name == "pick_task" and update.get("current_task"):
+        events.append(sse_event("task", {"task": update["current_task"]}))
+
+    if node_name == "analyze" and update.get("current_analysis"):
+        events.append(
+            sse_event(
+                "analysis",
+                {
+                    "task": state.get("current_task"),
+                    "analysis": update["current_analysis"],
+                },
+            )
+        )
+
+    if node_name == "execute":
+        completed_tasks = cast(list[str], update.get("completed_tasks", []))
+        results = cast(list[str], update.get("results", []))
+
+        if completed_tasks and results:
+            events.append(
+                sse_event(
+                    "task_done",
+                    {
+                        "task": completed_tasks[-1],
+                        "result": results[-1],
+                        "loop_count": update.get("loop_count"),
+                    },
+                )
+            )
+
+    if node_name == "summarize" and update.get("summary"):
+        events.append(sse_event("summary", {"text": update["summary"]}))
+
+    return events
 
 
 @app.get("/healthz", response_model=HealthResponse)
@@ -118,12 +179,25 @@ async def stream_run(run_id: str) -> EventSourceResponse:
 
         try:
             graph = build_graph()
-            final_state = cast(AgentState, await graph.ainvoke(record["state"]))
+            current_state = record["state"]
+            summary_sent = False
 
-            record["state"] = final_state
+            async for chunk in graph.astream(current_state, stream_mode="updates"):
+                for node_name, update in chunk.items():
+                    current_state = apply_state_update(current_state, update)
+                    record["state"] = current_state
+
+                    for event in progress_events(node_name, current_state, update):
+                        if event["event"] == "summary":
+                            summary_sent = True
+                        yield event
+
+            record["state"] = current_state
             record["status"] = "completed"
 
-            yield sse_event("summary", {"text": final_state.get("summary") or ""})
+            if not summary_sent:
+                yield sse_event("summary", {"text": current_state.get("summary") or ""})
+
             yield sse_event("done", {})
         except Exception as error:
             record["status"] = "failed"
