@@ -4,12 +4,13 @@ agentmake is a Python rebuild of the AgentGPT-style agent loop using LangGraph
 and LangChain. The goal is to move the autonomous agent brain out of the browser
 and into one server-side state machine that can later be streamed through an API.
 
-Right now, agentmake is a headless CLI agent. It can take a goal, plan tasks,
-choose a tool for each task, execute those tasks, and summarize the results.
+Right now, agentmake can run as a headless CLI agent or as a FastAPI service.
+It can take a goal, plan tasks, choose a tool for each task, execute those
+tasks, stream progress events, and summarize the results.
 
 ## Current Status
 
-Implemented through **M2 2d**:
+Implemented through **M3 graph progress streaming**:
 
 - A LangGraph `StateGraph` owns the agent loop.
 - Goals are converted into structured task lists.
@@ -22,16 +23,21 @@ Implemented through **M2 2d**:
 - The executor runs the selected tool and stores the result.
 - The summarizer combines all task results into a final answer.
 - The CLI can run the full loop end to end.
+- FastAPI exposes:
+  - `GET /healthz`
+  - `GET /tools`
+  - `POST /runs`
+  - `GET /runs/{run_id}/stream`
+- The stream endpoint emits SSE progress events from graph updates.
+- Focused tests cover tools, graph routing, analyze fallback, and API streaming.
 
 Not implemented yet:
 
-- FastAPI/SSE run API
 - Checkpoint persistence and pause/resume
 - Task expansion
 - Chat over completed results
 - Durable user memory
 - Frontend
-- Automated tests
 
 ## Architecture At A Glance
 
@@ -88,14 +94,22 @@ app/
       search.py            # DuckDuckGo search with cited summary
       code.py              # Code-focused LLM tool
       conclude.py          # Task conclusion tool
+  api/
+    main.py                # FastAPI app, CORS, run creation, SSE stream
+    schemas.py             # API request/response schemas
 scripts/
   run_cli.py               # Headless CLI entrypoint
+tests/
+  test_analyze.py          # Analyze-node behavior and fallback tests
+  test_api.py              # FastAPI and SSE stream tests
+  test_graph.py            # Graph routing and fake-model loop tests
+  test_tools.py            # Tool registry and tool behavior tests
 docs/
   assets/
     agent_graph_mermaid.png
 ```
 
-## Run It
+## Run The CLI
 
 Install dependencies with `uv`, then set your LLM key in `.env`.
 
@@ -111,15 +125,89 @@ Run a goal:
 uv run python scripts/run_cli.py "Search for LangGraph documentation and write a tiny Python example"
 ```
 
+## Run The API
+
+Start the FastAPI server from the `code/` directory:
+
+```bash
+uv run uvicorn app.api.main:app --reload --port 8000
+```
+
+Open the generated API docs:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8000/healthz
+```
+
+List available tools:
+
+```bash
+curl http://127.0.0.1:8000/tools
+```
+
+Create a run:
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs \
+  -H "Content-Type: application/json" \
+  -d '{"goal":"Write a short explanation of LangGraph"}'
+```
+
+Copy the returned `run_id`, then stream that run:
+
+```bash
+curl -N http://127.0.0.1:8000/runs/YOUR_RUN_ID/stream
+```
+
+The stream currently emits these SSE event types:
+
+```text
+status
+node
+plan
+task
+analysis
+task_done
+summary
+error
+done
+```
+
+Current persistence is intentionally temporary:
+
+```python
+RUNS: dict[str, RunRecord] = {}
+```
+
+That in-memory dictionary stores created runs while the server process is alive.
+If the server restarts, run state is lost. SQLite/LangGraph checkpointing is a
+later M3 step.
+
+## Quality Checks
+
 Run quality checks:
 
 ```bash
 uv run ruff check .
 uv run mypy --cache-dir /tmp/agentmake-mypy-cache .
+uv run pytest -q -p no:cacheprovider
 ```
 
-There are currently no automated tests, so `pytest` reports zero collected
-tests.
+To run only API tests:
+
+```bash
+uv run pytest -q tests/test_api.py -p no:cacheprovider
+```
+
+Do not run test files directly with `python tests/test_api.py`; pytest reads the
+project `pythonpath` config from `pyproject.toml`, while direct Python execution
+does not.
 
 ## Tool System
 
@@ -152,15 +240,19 @@ M2a  complete: prompts and ToolChoice schema
 M2b  complete: tool registry, reason, conclude
 M2c  complete: search and code tools
 M2d  complete: analyze_node and selected-tool execution
+M3a  complete: FastAPI shell with health, tools, and run creation
+M3b  complete: SSE run stream endpoint
+M3c  complete: graph progress events over SSE
 ```
 
 ## Next Steps
 
 Recommended next work:
 
-1. Add focused tests for tools, graph routing, and analyze fallback.
-2. Add optional debug transcript output so tool choices are visible in CLI runs.
-3. Start M3: FastAPI run API and SSE streaming.
+1. Improve streaming robustness and event shapes.
+2. Add SQLite/LangGraph checkpoint persistence.
+3. Add pause/resume endpoints.
+4. Prepare Railway deployment.
 
 M3 target API:
 
