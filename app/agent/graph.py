@@ -22,6 +22,8 @@ def route_after_pick(state: AgentState) -> str:
 def route_after_execute(state: AgentState) -> str:
     """Route to optional task expansion or directly to the next task."""
 
+    if state["loop_count"] >= state["max_loops"]:
+        return "summarize"
     if state.get("expand_tasks", False) and state["loop_count"] < state["max_loops"]:
         return "create_tasks"
     return "pick_task"
@@ -48,7 +50,11 @@ def build_graph(*, checkpointer=None):
     builder.add_conditional_edges(
         "execute",
         route_after_execute,
-        {"create_tasks": "create_tasks", "pick_task": "pick_task"},
+        {
+            "create_tasks": "create_tasks",
+            "pick_task": "pick_task",
+            "summarize": "summarize",
+        },
     )
     builder.add_edge("create_tasks", "pick_task")
     builder.add_edge("summarize", END)

@@ -57,9 +57,15 @@ def test_route_after_execute_routes_to_create_tasks_when_expansion_enabled() -> 
     )
 
 
-def test_route_after_execute_routes_to_pick_task_at_loop_limit() -> None:
+def test_route_after_execute_routes_to_summary_at_loop_limit() -> None:
     assert route_after_execute(make_state(expand_tasks=True, loop_count=3, max_loops=3)) == (
-        "pick_task"
+        "summarize"
+    )
+
+
+def test_route_after_execute_routes_to_summary_at_loop_limit_without_expansion() -> None:
+    assert route_after_execute(make_state(expand_tasks=False, loop_count=3, max_loops=3)) == (
+        "summarize"
     )
 
 
