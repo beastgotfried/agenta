@@ -4,15 +4,15 @@ agentmake is a Python rebuild of the AgentGPT-style agent loop using LangGraph
 and LangChain. The goal is to move the autonomous agent brain out of the browser
 and into one server-side state machine that can later be streamed through an API.
 
-Right now, agentmake can run as a headless CLI agent or as a FastAPI service.
-It can take a goal, plan tasks, choose a tool for each task, execute those
-tasks, optionally add follow-up tasks, stream progress events, pause and resume
-runs, summarize the results, and answer follow-up questions over completed run
-results.
+Right now, agentmake can run as a headless CLI agent, as a FastAPI service, or
+through a Vite frontend. It can take a goal, plan tasks, choose a tool for each
+task, execute those tasks, optionally add follow-up tasks, stream progress
+events, pause and resume runs, summarize the results, and answer follow-up
+questions over completed run results.
 
 ## Current Status
 
-Implemented through **optional task expansion**:
+Implemented through **the first frontend streaming client**:
 
 - A LangGraph `StateGraph` owns the agent loop.
 - Goals are converted into structured task lists.
@@ -40,6 +40,8 @@ Implemented through **optional task expansion**:
   - `GET /runs/{run_id}/chat`
   - `POST /runs/{run_id}/chat`
 - The stream endpoint emits SSE progress events from graph updates.
+- A Vite + React frontend can create runs, consume the SSE stream, render task
+  progress, pause/resume/cancel runs, and chat with completed run results.
 - Run state and chat messages are stored in SQLite at `data/runs.sqlite`.
 - LangGraph checkpoints are stored in SQLite at `data/checkpoints.sqlite`.
 - Streams resume from the latest LangGraph checkpoint when a run is restarted.
@@ -51,7 +53,8 @@ Implemented through **optional task expansion**:
 Not implemented yet:
 
 - Durable user memory
-- Frontend
+- Run history/list UI
+- Production auth/user IDs
 
 ## Architecture At A Glance
 
@@ -119,6 +122,12 @@ app/
   persistence/
     run_store.py           # SQLite storage for runs, agent state, chat messages
     checkpointer.py        # LangGraph SQLite checkpoint helpers
+frontend/
+  src/
+    api.ts                 # API fetch helpers and SSE stream client
+    App.tsx                # Run console, controls, task stream, chat
+    styles.css             # Frontend layout and responsive UI styles
+  package.json             # Vite + React scripts
 scripts/
   run_cli.py               # Headless CLI entrypoint
 tests/
@@ -284,6 +293,34 @@ The run store keeps API-facing status and serialized `AgentState`; the
 checkpoint database lets LangGraph continue a paused run from its latest
 checkpoint. On resume, the API skips cached checkpoint updates so already-saved
 task results are not duplicated in the stored run state.
+
+## Run The Frontend
+
+Start the backend first:
+
+```bash
+uv run uvicorn app.api.main:app --reload --port 8000
+```
+
+Then start the Vite app:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open:
+
+```text
+http://127.0.0.1:5173
+```
+
+The frontend reads `VITE_BACKEND_URL`, defaulting to:
+
+```text
+http://127.0.0.1:8000
+```
 
 ## Deploy On Railway
 
