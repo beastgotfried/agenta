@@ -1,10 +1,12 @@
 import {
+  Activity,
   AlertCircle,
   Brain,
   CheckCircle2,
   Circle,
   Code2,
   Flag,
+  History,
   MessageSquare,
   Pause,
   Play,
@@ -12,10 +14,10 @@ import {
   RefreshCw,
   Search,
   Send,
-  Square,
-  X
+  X,
+  Zap
 } from "lucide-react";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { type CSSProperties, FormEvent, useEffect, useRef, useState } from "react";
 import {
   API_BASE,
   askRun,
@@ -54,6 +56,17 @@ const TOOL_ICONS: Record<ToolName, typeof Brain> = {
   conclude: Flag
 };
 
+const NODE_SEQUENCE = [
+  ["plan", "Plan"],
+  ["pick_task", "Pick"],
+  ["analyze", "Analyze"],
+  ["execute", "Execute"],
+  ["create_tasks", "Expand"],
+  ["summarize", "Summarize"]
+] as const;
+
+const NODE_LABELS = Object.fromEntries(NODE_SEQUENCE) as Record<string, string>;
+
 function taskId(title: string): string {
   return title.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
 }
@@ -73,6 +86,22 @@ function updateTask(
   return tasks.map((task) => (task.id === id ? { ...task, ...update } : task));
 }
 
+function nodeLabel(node: string): string {
+  return NODE_LABELS[node] || node.replace(/_/g, " ");
+}
+
+function formatChatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
+}
+
 function LinkifiedText({ text }: { text: string }) {
   const parts = text.split(/(https?:\/\/[^\s)]+)/g);
 
@@ -84,7 +113,7 @@ function LinkifiedText({ text }: { text: string }) {
         }
 
         return (
-          <a href={part} key={part} target="_blank" rel="noreferrer">
+          <a href={part} key={`${part}-${index}`} target="_blank" rel="noreferrer">
             {part}
           </a>
         );
@@ -93,11 +122,14 @@ function LinkifiedText({ text }: { text: string }) {
   );
 }
 
-function EmptyState() {
+function EmptyTrace() {
   return (
-    <div className="empty-state">
-      <Radio size={26} />
-      <span>No stream events yet.</span>
+    <div className="empty-trace">
+      <Radio aria-hidden="true" size={28} />
+      <div>
+        <strong>No Trace Yet</strong>
+        <span>Start a run to populate the execution spine.</span>
+      </div>
     </div>
   );
 }
@@ -294,6 +326,10 @@ export default function App() {
 
   async function handleCancel() {
     if (!runId) return;
+    if (!window.confirm("Cancel this run? The current graph step stops after it finishes.")) {
+      return;
+    }
+
     try {
       const response = await cancelRun(runId);
       setStatus(response.status);
@@ -334,217 +370,332 @@ export default function App() {
   const canResume = status === "paused" && Boolean(runId);
   const canCancel = ["created", "running", "paused"].includes(status) && Boolean(runId);
   const canChat = status === "completed" && Boolean(runId);
+  const completedCount = tasks.filter((task) => task.status === "completed").length;
+  const queuedCount = tasks.filter((task) => task.status === "queued").length;
+  const activeTask = tasks.find((task) => task.status === "active");
+  const progress = tasks.length === 0 ? 0 : Math.round((completedCount / tasks.length) * 100);
+  const lastEvent = events.length > 0 ? events[events.length - 1] : undefined;
+  const activeTool = activeTask?.analysis?.action || "reason";
+  const ActiveToolIcon = TOOL_ICONS[activeTool];
+  const progressStyle = { "--progress": `${progress}%` } as CSSProperties;
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">agentmake</p>
-          <h1>agenta</h1>
-        </div>
-        <div className={`status-pill ${status}`}>
-          <span />
-          {STATUS_LABELS[status]}
-        </div>
-      </header>
+    <>
+      <a className="skip-link" href="#trace-title">
+        Skip To Run Workspace
+      </a>
+      <main className="app-shell">
+        <header className="topbar">
+          <div className="brand-stack">
+            <div className="brand-mark" aria-hidden="true">
+              ag
+            </div>
+            <div>
+              <p className="eyebrow">agentmake</p>
+              <h1 translate="no">agenta</h1>
+            </div>
+          </div>
+          <div className={`status-pill ${status}`} aria-live="polite">
+            <span aria-hidden="true" />
+            {STATUS_LABELS[status]}
+          </div>
+        </header>
 
-      <section className="workspace">
-        <aside className="control-panel">
-          <form onSubmit={handleStart} className="run-form">
-            <label htmlFor="goal">Goal</label>
-            <textarea
-              id="goal"
-              value={goal}
-              onChange={(event) => setGoal(event.target.value)}
-              rows={7}
-              placeholder="Research LangGraph checkpointing and summarize the important API ideas"
-            />
-
-            <div className="field-grid">
-              <label>
-                Language
-                <input
-                  value={language}
-                  onChange={(event) => setLanguage(event.target.value)}
-                />
-              </label>
-              <label>
-                Loops
-                <input
-                  min={1}
-                  max={25}
-                  type="number"
-                  value={maxLoops}
-                  onChange={(event) =>
-                    setMaxLoops(Math.min(25, Math.max(1, Number(event.target.value) || 1)))
-                  }
-                />
-              </label>
+        <section className="workspace" aria-label="Agenta run console">
+          <aside className="launch-dock" aria-labelledby="launch-title">
+            <div className="dock-heading">
+              <p className="eyebrow">Launch</p>
+              <h2 id="launch-title">New Run</h2>
             </div>
 
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={expandTasks}
-                onChange={(event) => setExpandTasks(event.target.checked)}
+            <form onSubmit={handleStart} className="run-form">
+              <label htmlFor="goal">Goal</label>
+              <textarea
+                autoComplete="off"
+                id="goal"
+                name="goal"
+                value={goal}
+                onChange={(event) => setGoal(event.target.value)}
+                rows={8}
+                placeholder="Research LangGraph checkpointing, compare patterns, then summarize the API ideas…"
               />
-              Expand tasks
-            </label>
 
-            <button className="primary-button" disabled={!canStart} type="submit">
-              <Play size={17} />
-              Start run
-            </button>
-          </form>
-
-          <div className="control-row">
-            <button disabled={!canPause} onClick={handlePause} title="Pause run">
-              <Pause size={16} />
-              Pause
-            </button>
-            <button disabled={!canResume} onClick={handleResume} title="Resume run">
-              <RefreshCw size={16} />
-              Resume
-            </button>
-            <button disabled={!canCancel} onClick={handleCancel} title="Cancel run">
-              <X size={16} />
-              Cancel
-            </button>
-          </div>
-
-          <div className="meta-panel">
-            <div>
-              <span>Backend</span>
-              <strong>{API_BASE}</strong>
-            </div>
-            <div>
-              <span>Run ID</span>
-              <strong>{runId || "none"}</strong>
-            </div>
-            <div>
-              <span>Node</span>
-              <strong>{activeNode}</strong>
-            </div>
-          </div>
-
-          <div className="tool-list">
-            <h2>Tools</h2>
-            {tools.map((tool) => {
-              const Icon = TOOL_ICONS[tool.name] || Brain;
-              return (
-                <div className="tool-row" key={tool.name}>
-                  <Icon size={16} />
-                  <span>{tool.name}</span>
-                </div>
-              );
-            })}
-          </div>
-        </aside>
-
-        <section className="run-panel">
-          {error ? (
-            <div className="error-banner">
-              <AlertCircle size={18} />
-              {error}
-            </div>
-          ) : null}
-
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Run</p>
-              <h2>Task stream</h2>
-            </div>
-            <span>{events.length} events</span>
-          </div>
-
-          {tasks.length === 0 ? (
-            <EmptyState />
-          ) : (
-            <div className="task-list">
-              {tasks.map((task) => {
-                const Icon = task.status === "completed" ? CheckCircle2 : Circle;
-                const ToolIcon = task.analysis ? TOOL_ICONS[task.analysis.action] : Brain;
-                return (
-                  <article className={`task-card ${task.status}`} key={task.id}>
-                    <div className="task-title">
-                      <Icon size={18} />
-                      <h3>{task.title}</h3>
-                    </div>
-
-                    {task.analysis ? (
-                      <div className="analysis-row">
-                        <ToolIcon size={16} />
-                        <span>{task.analysis.action}</span>
-                        <p>{task.analysis.reasoning}</p>
-                      </div>
-                    ) : null}
-
-                    {task.result ? (
-                      <div className="result-block">
-                        <LinkifiedText text={task.result} />
-                      </div>
-                    ) : null}
-                  </article>
-                );
-              })}
-            </div>
-          )}
-
-          <div className="summary-panel">
-            <div className="section-heading compact">
-              <div>
-                <p className="eyebrow">Output</p>
-                <h2>Summary</h2>
+              <div className="field-grid">
+                <label htmlFor="language">
+                  Language
+                  <input
+                    autoComplete="off"
+                    id="language"
+                    name="language"
+                    value={language}
+                    onChange={(event) => setLanguage(event.target.value)}
+                  />
+                </label>
+                <label htmlFor="max-loops">
+                  Loops
+                  <input
+                    autoComplete="off"
+                    id="max-loops"
+                    inputMode="numeric"
+                    max={25}
+                    min={1}
+                    name="max_loops"
+                    type="number"
+                    value={maxLoops}
+                    onChange={(event) =>
+                      setMaxLoops(Math.min(25, Math.max(1, Number(event.target.value) || 1)))
+                    }
+                  />
+                </label>
               </div>
-              {status === "running" ? <Square size={14} /> : null}
-            </div>
-            <div className="summary-body">
-              {summary ? <LinkifiedText text={summary} /> : <span>No summary yet.</span>}
-            </div>
-          </div>
-        </section>
 
-        <aside className="chat-panel">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Completed run</p>
-              <h2>Chat</h2>
-            </div>
-            <button disabled={!canChat} onClick={loadChatHistory} title="Load chat history">
-              <MessageSquare size={16} />
-            </button>
-          </div>
+              <label className="switch-row">
+                <input
+                  checked={expandTasks}
+                  name="expand_tasks"
+                  onChange={(event) => setExpandTasks(event.target.checked)}
+                  type="checkbox"
+                />
+                <span aria-hidden="true" />
+                Expand Tasks
+              </label>
 
-          <div className="chat-thread">
-            {chatMessages.length === 0 ? (
-              <span>No messages yet.</span>
+              <button className="primary-button" disabled={!canStart} type="submit">
+                <Play aria-hidden="true" size={17} />
+                Start Run
+              </button>
+            </form>
+
+            <div className="control-row" aria-label="Run controls">
+              <button disabled={!canPause} onClick={handlePause} type="button">
+                <Pause aria-hidden="true" size={16} />
+                Pause
+              </button>
+              <button disabled={!canResume} onClick={handleResume} type="button">
+                <RefreshCw aria-hidden="true" size={16} />
+                Resume
+              </button>
+              <button
+                className="danger-button"
+                disabled={!canCancel}
+                onClick={handleCancel}
+                type="button"
+              >
+                <X aria-hidden="true" size={16} />
+                Cancel
+              </button>
+            </div>
+
+            <dl className="run-facts">
+              <div>
+                <dt>Backend</dt>
+                <dd translate="no">{API_BASE}</dd>
+              </div>
+              <div>
+                <dt>Run ID</dt>
+                <dd translate="no">{runId || "none"}</dd>
+              </div>
+              <div>
+                <dt>Node</dt>
+                <dd translate="no">{nodeLabel(activeNode)}</dd>
+              </div>
+            </dl>
+
+            <section className="tool-list" aria-labelledby="tools-title">
+              <h2 id="tools-title">Tools</h2>
+              <ul>
+                {tools.map((tool) => {
+                  const Icon = TOOL_ICONS[tool.name] || Brain;
+                  return (
+                    <li key={tool.name} title={tool.description}>
+                      <Icon aria-hidden="true" size={16} />
+                      <span translate="no">{tool.name}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          </aside>
+
+          <section className="trace-desk" aria-labelledby="trace-title">
+            {error ? (
+              <div className="error-banner" role="alert">
+                <AlertCircle aria-hidden="true" size={18} />
+                {error}
+              </div>
+            ) : null}
+
+            <div className="trace-hero">
+              <div>
+                <p className="eyebrow">Live Graph</p>
+                <h2 id="trace-title">Execution Spine</h2>
+              </div>
+              <div className="run-signal" aria-label={`Progress ${progress}%`} style={progressStyle}>
+                <span aria-hidden="true" />
+                <strong>{progress}%</strong>
+              </div>
+            </div>
+
+            <div className="metric-strip">
+              <div>
+                <span>Completed</span>
+                <strong>
+                  {completedCount}/{tasks.length || 0}
+                </strong>
+              </div>
+              <div>
+                <span>Queued</span>
+                <strong>{queuedCount}</strong>
+              </div>
+              <div>
+                <span>Events</span>
+                <strong>{events.length}</strong>
+              </div>
+              <div>
+                <span>Latest</span>
+                <strong translate="no">{lastEvent?.type || "none"}</strong>
+              </div>
+            </div>
+
+            <ol className="node-ribbon" aria-label="Graph node path">
+              {NODE_SEQUENCE.map(([node, label]) => (
+                <li className={activeNode === node ? "active" : ""} key={node}>
+                  <span aria-hidden="true" />
+                  {label}
+                </li>
+              ))}
+            </ol>
+
+            <div className="trace-focus">
+              <ActiveToolIcon aria-hidden="true" size={18} />
+              <span>Active Tool</span>
+              <strong translate="no">{activeTask?.analysis?.action || "waiting"}</strong>
+              <p>{activeTask?.title || "No task is executing right now."}</p>
+            </div>
+
+            {tasks.length === 0 ? (
+              <EmptyTrace />
             ) : (
-              chatMessages.map((message) => (
-                <div className="chat-message" key={message.id}>
-                  <strong>{message.question}</strong>
-                  <p>
-                    <LinkifiedText text={message.answer} />
-                  </p>
-                </div>
-              ))
-            )}
-          </div>
+              <ol className="trace-list">
+                {tasks.map((task, index) => {
+                  const Icon = task.status === "completed" ? CheckCircle2 : Circle;
+                  const ToolIcon = task.analysis ? TOOL_ICONS[task.analysis.action] : Brain;
+                  return (
+                    <li className={`trace-item ${task.status}`} key={task.id}>
+                      <article aria-current={task.status === "active" ? "step" : undefined}>
+                        <div className="task-index" aria-hidden="true">
+                          {String(index + 1).padStart(2, "0")}
+                        </div>
+                        <div className="task-body">
+                          <div className="task-title">
+                            <Icon aria-hidden="true" size={18} />
+                            <h3>{task.title}</h3>
+                            <span className="task-state">{task.status}</span>
+                          </div>
 
-          <form className="chat-form" onSubmit={handleChat}>
-            <textarea
-              disabled={!canChat || isChatLoading}
-              value={chatQuestion}
-              onChange={(event) => setChatQuestion(event.target.value)}
-              placeholder="Ask about the completed run"
-              rows={3}
-            />
-            <button disabled={!canChat || isChatLoading || !chatQuestion.trim()} type="submit">
-              <Send size={16} />
-              Send
-            </button>
-          </form>
-        </aside>
-      </section>
-    </main>
+                          {task.analysis ? (
+                            <div className="analysis-row">
+                              <ToolIcon aria-hidden="true" size={16} />
+                              <span translate="no">{task.analysis.action}</span>
+                              <p>{task.analysis.reasoning}</p>
+                            </div>
+                          ) : null}
+
+                          {task.result ? (
+                            <div className="result-block">
+                              <LinkifiedText text={task.result} />
+                            </div>
+                          ) : null}
+                        </div>
+                      </article>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+
+            <section className="summary-panel" aria-live="polite">
+              <div className="section-heading compact">
+                <div>
+                  <p className="eyebrow">Output</p>
+                  <h2>Summary</h2>
+                </div>
+                {status === "running" ? <Activity aria-hidden="true" size={16} /> : null}
+              </div>
+              <div className="summary-body">
+                {summary ? <LinkifiedText text={summary} /> : <span>No summary yet.</span>}
+              </div>
+            </section>
+          </section>
+
+          <aside className="debrief-dock" aria-labelledby="chat-title">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Debrief</p>
+                <h2 id="chat-title">Run Chat</h2>
+              </div>
+              <button
+                aria-label="Load chat history"
+                className="icon-button"
+                disabled={!canChat}
+                onClick={loadChatHistory}
+                title="Load chat history"
+                type="button"
+              >
+                <History aria-hidden="true" size={16} />
+              </button>
+            </div>
+
+            <div className="chat-thread" aria-live="polite" role="log">
+              {chatMessages.length === 0 ? (
+                <div className="chat-empty">
+                  <MessageSquare aria-hidden="true" size={20} />
+                  <span>No Messages Yet</span>
+                </div>
+              ) : (
+                chatMessages.map((message) => {
+                  const time = formatChatTime(message.created_at);
+                  return (
+                    <article className="chat-message" key={message.id}>
+                      <div>
+                        <strong>{message.question}</strong>
+                        {time ? (
+                          <time dateTime={message.created_at}>{time}</time>
+                        ) : null}
+                      </div>
+                      <p>
+                        <LinkifiedText text={message.answer} />
+                      </p>
+                    </article>
+                  );
+                })
+              )}
+            </div>
+
+            <form className="chat-form" onSubmit={handleChat}>
+              <label htmlFor="chat-question">Question</label>
+              <textarea
+                autoComplete="off"
+                disabled={!canChat || isChatLoading}
+                id="chat-question"
+                name="chat_question"
+                onChange={(event) => setChatQuestion(event.target.value)}
+                placeholder="Ask what the run concluded…"
+                rows={4}
+                value={chatQuestion}
+              />
+              <button disabled={!canChat || isChatLoading || !chatQuestion.trim()} type="submit">
+                {isChatLoading ? (
+                  <Zap aria-hidden="true" size={16} />
+                ) : (
+                  <Send aria-hidden="true" size={16} />
+                )}
+                {isChatLoading ? "Asking…" : "Ask Run"}
+              </button>
+            </form>
+          </aside>
+        </section>
+      </main>
+    </>
   );
 }

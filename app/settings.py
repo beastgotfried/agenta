@@ -12,6 +12,14 @@ class Settings(BaseSettings):
     max_loops: int = 25
     run_db_path: Path = Path("data/runs.sqlite")
     checkpoint_db_path: Path = Path("data/checkpoints.sqlite")
+    frontend_origins: str = (
+        "http://localhost:3000,"
+        "http://localhost:5173,"
+        "http://localhost:5174,"
+        "http://127.0.0.1:3000,"
+        "http://127.0.0.1:5173,"
+        "http://127.0.0.1:5174"
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="UTF-8")
 
