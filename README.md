@@ -158,7 +158,7 @@ uv run python scripts/run_cli.py "Search for LangGraph documentation and write a
 
 ## Run The API
 
-Start the FastAPI server from the `code/` directory:
+Start the FastAPI server from the repository root:
 
 ```bash
 uv run uvicorn app.api.main:app --reload --port 8000
@@ -419,9 +419,9 @@ M4b  complete: DB-backed chat over completed run results
 
 Recommended next work:
 
-1. Start the frontend SSE client.
-2. Add durable user memory.
-3. Add run history/list endpoints.
+1. Add durable user memory.
+2. Add run history/list endpoints.
+3. Add run history/list UI.
 
 M3 target API:
 
